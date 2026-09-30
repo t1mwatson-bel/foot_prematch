@@ -3,7 +3,7 @@
 # =====================================================================
 import os
 
-BOT_TOKEN = os.getenv('BOT_TOKEN_PREMATCH')
+BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID_PREMATCH')
 
 MIN_SCORE = int(os.getenv('MIN_SCORE', '8'))
@@ -11,7 +11,7 @@ CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '3600'))
 HOURS_BEFORE = int(os.getenv('HOURS_BEFORE', '24'))
 
 if not BOT_TOKEN or not CHAT_ID:
-    print("❌ BOT_TOKEN_PREMATCH или CHAT_ID_PREMATCH не заданы", flush=True)
+    print("❌ BOT_TOKEN или CHAT_ID_PREMATCH не заданы", flush=True)
     exit(1)
 
 # Лиги (названия как в Understat)
