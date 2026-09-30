@@ -6,16 +6,16 @@ from config import BASE_URL, HEADERS, LEAGUES
 
 
 def get_prematch_games():
-    """Получает прематч-линию 1xlite."""
     url = f"{BASE_URL}/service-api/main-line-feed/v3/games1x2"
     params = {
         "cfView": 3,
-        "count": 100,
+        "count": 40,           # ← как в твоём URL
         "fcountry": 1,
         "gr": 2336,
         "grMode": 4,
         "lng": "ru",
         "ref": 1,
+        "selectedMs": "1.1,2.1,10.1",  # ← добавили
     }
     try:
         r = requests.get(url, headers=HEADERS, params=params, timeout=20)
