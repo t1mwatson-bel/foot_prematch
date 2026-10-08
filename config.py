@@ -42,7 +42,7 @@ LEAGUES = {
     },
 }
 
-BASE_URL = "https://1xlite-7720.pro"
+BASE_URL = "https://1xlite-8150.pro"
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 HEADERS = {
