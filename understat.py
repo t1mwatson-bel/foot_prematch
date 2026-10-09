@@ -52,32 +52,16 @@ def fetch_understat(league_name):
         html = r.text
 
         # Ищем все переменные с JSON.parse — узнаём новое имя
-import re as _re
-all_vars = _re.findall(r"var\s+(\w+)\s*=\s*JSON\.parse", html)
-print(f"   🔎 Найдены переменные: {all_vars}", flush=True)
+        all_vars = re.findall(r"var\s+(\w+)\s*=\s*JSON\.parse", html)
+        print(f"   🔎 Найдены переменные: {all_vars}", flush=True)
 
-# Показываем, какие ключевые слова есть в HTML
-for kw in ["teamsData", "teamsStats", "datesData", "playersData", "leagueData"]:
-    if kw in html:
-        print(f"   💡 Найдено: {kw}", flush=True)
+        # Показываем, какие ключевые слова есть в HTML
+        for kw in ["teamsData", "teamsStats", "datesData", "playersData", "leagueData"]:
+            if kw in html:
+                print(f"   💡 Найдено: {kw}", flush=True)
 
-return None  # пока не парсим
-
-        # Ищем переменную teamsData
-        match = re.search(r"var teamsData\s*=\s*JSON\.parse\('(.+?)'\)", html)
-        if not match:
-            print(f"   ❌ Understat {league_name}: regex не сработал (структура изменилась)", flush=True)
-            return None
-
-        # Раскодируем escape-последовательности (\x7B → {)
-        data_str = match.group(1).encode().decode('unicode_escape')
-        data = json.loads(data_str)
-
-        # Сохраняем в кэш
-        _CACHE[league_name] = {"data": data, "ts": time.time()}
-
-        print(f"   ✅ Understat {league_name}: {len(data)} команд", flush=True)
-        return data
+        # Временно возвращаем None — чтобы увидеть отладку
+        return None
 
     except Exception as e:
         print(f"   ❌ Understat {league_name}: {type(e).__name__}: {e}", flush=True)
