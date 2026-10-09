@@ -37,21 +37,30 @@ def fetch_understat(league_name):
 
     url = UNDERSTAT_LEAGUES.get(league_name)
     if not url:
-        print(f"❌ Лига '{league_name}' не найдена в Understat", flush=True)
+        print(f"❌ Understat '{league_name}': нет URL", flush=True)
         return None
 
     try:
+        print(f"   🔎 Understat: GET {url}", flush=True)
         r = requests.get(url, headers=HEADERS, timeout=20)
+        print(f"   🔎 Understat {league_name}: HTTP {r.status_code} | len={len(r.text)}", flush=True)
+
         if r.status_code != 200:
-            print(f"❌ Understat {league_name}: HTTP {r.status_code}", flush=True)
+            print(f"   ❌ Understat {league_name}: HTTP {r.status_code}", flush=True)
             return None
 
         html = r.text
 
+        # Проверяем, есть ли вообще teamsData в HTML
+        if "teamsData" not in html:
+            print(f"   ❌ Understat {league_name}: 'teamsData' НЕ найдена в HTML", flush=True)
+            print(f"   🔎 Первые 500 символов: {html[:500]}", flush=True)
+            return None
+
         # Ищем переменную teamsData
         match = re.search(r"var teamsData\s*=\s*JSON\.parse\('(.+?)'\)", html)
         if not match:
-            print(f"❌ Understat {league_name}: teamsData не найдена", flush=True)
+            print(f"   ❌ Understat {league_name}: regex не сработал (структура изменилась)", flush=True)
             return None
 
         # Раскодируем escape-последовательности (\x7B → {)
@@ -61,11 +70,13 @@ def fetch_understat(league_name):
         # Сохраняем в кэш
         _CACHE[league_name] = {"data": data, "ts": time.time()}
 
-        print(f"✅ Understat {league_name}: {len(data)} команд", flush=True)
+        print(f"   ✅ Understat {league_name}: {len(data)} команд", flush=True)
         return data
 
     except Exception as e:
-        print(f"❌ Understat {league_name}: {e}", flush=True)
+        print(f"   ❌ Understat {league_name}: {type(e).__name__}: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
         return None
 
 
