@@ -1,5 +1,5 @@
 # =====================================================================
-# PREMATCH BOT — ГЛАВНЫЙ
+# PREMATCH BOT — ГЛАВНЫЙ (nb-bet версия)
 # =====================================================================
 import time
 import json
@@ -7,10 +7,11 @@ import requests
 from datetime import datetime
 
 from config import BOT_TOKEN, CHAT_ID, API, MIN_SCORE, CHECK_INTERVAL, HOURS_BEFORE
-from understat import fetch_understat, get_team_stats
+from nbbet_stats import get_match_data
 from checklist import check_10_criteria
 from onexbet import get_prematch_games, parse_prematch_game
 from database import init_db, save_signal, get_stats
+
 
 # =====================================================================
 # TELEGRAM
@@ -38,20 +39,21 @@ def format_signal(match_data, score, reasons, home_stats, away_stats):
     start_dt = datetime.fromtimestamp(match_data["start_ts"])
     start_str = start_dt.strftime("%d.%m %H:%M")
 
-    # Иконки для причин
     lines = [
         f"🎯 <b>ПРЕМАТЧ-СИГНАЛ: {score}/10</b>",
         f"🏆 {match_data['league']}",
         f"⚽ <b>{match_data['match']}</b>",
         f"🕐 Старт: {start_str} МСК",
         "",
-        f"📊 <b>Статистика (последние 10 матчей):</b>",
+        f"📊 <b>Статистика (nb-bet):</b>",
         f"<b>{match_data['team1']}</b>:",
-        f"  xG: {home_stats['avg_xg']:.2f} | Забивает: {home_stats['avg_scored']:.2f} | Пропускает: {home_stats['avg_missed']:.2f}",
-        f"  Тотал: {home_stats['avg_total']:.2f} | BTTS: {home_stats['btts_pct']*100:.0f}% | Верх: {home_stats['over_pct']*100:.0f}%",
+        f"  xG: {home_stats.get('avg_xg', 0):.2f} | Забивает: {home_stats.get('avg_scored_home', 0):.2f} | Пропускает: {home_stats.get('avg_missed_home', 0):.2f}",
+        f"  Тотал: {home_stats.get('avg_total', 0):.2f} | BTTS: {home_stats.get('btts_pct', 0)*100:.0f}% | Верх: {home_stats.get('over_pct', 0)*100:.0f}%",
+        f"  Углы: {home_stats.get('corners', '—')} | ЖК: {home_stats.get('yellow_cards', '—')} | Владение: {home_stats.get('possession', '—')}%",
         f"<b>{match_data['team2']}</b>:",
-        f"  xG: {away_stats['avg_xg']:.2f} | Забивает: {away_stats['avg_scored']:.2f} | Пропускает: {away_stats['avg_missed']:.2f}",
-        f"  Тотал: {away_stats['avg_total']:.2f} | BTTS: {away_stats['btts_pct']*100:.0f}% | Верх: {away_stats['over_pct']*100:.0f}%",
+        f"  xG: {away_stats.get('avg_xg', 0):.2f} | Забивает: {away_stats.get('avg_scored_away', 0):.2f} | Пропускает: {away_stats.get('avg_missed_away', 0):.2f}",
+        f"  Тотал: {away_stats.get('avg_total', 0):.2f} | BTTS: {away_stats.get('btts_pct', 0)*100:.0f}% | Верх: {away_stats.get('over_pct', 0)*100:.0f}%",
+        f"  Углы: {away_stats.get('corners', '—')} | ЖК: {away_stats.get('yellow_cards', '—')} | Владение: {away_stats.get('possession', '—')}%",
         "",
         f"📋 <b>ЧЕК-ЛИСТ:</b>",
     ]
@@ -68,10 +70,22 @@ def format_signal(match_data, score, reasons, home_stats, away_stats):
 # =====================================================================
 # ПРОВЕРКА МАТЧА
 # =====================================================================
-def check_match(match_data, understat_data):
-    """Считает чек-лист для одного матча."""
-    home_stats = get_team_stats(match_data["team1"], match_data["league"], understat_data)
-    away_stats = get_team_stats(match_data["team2"], match_data["league"], understat_data)
+def check_match(match_data):
+    """
+    Считает чек-лист для одного матча через nb-bet.
+    match_data = {team1, team2, league, match, start_ts, odd_tb25, ...}
+    """
+    # Получаем данные из nb-bet по названиям команд
+    nbbet_data = get_match_data(
+        team1=match_data["team1"],
+        team2=match_data["team2"],
+    )
+
+    if not nbbet_data:
+        return None
+
+    home_stats = nbbet_data.get("home_stats")
+    away_stats = nbbet_data.get("away_stats")
 
     if not home_stats or not away_stats:
         return None
@@ -84,6 +98,7 @@ def check_match(match_data, understat_data):
             "reasons": reasons,
             "home_stats": home_stats,
             "away_stats": away_stats,
+            "nbbet_data": nbbet_data,
         }
     return None
 
@@ -92,15 +107,15 @@ def check_match(match_data, understat_data):
 # ГЛАВНЫЙ ЦИКЛ
 # =====================================================================
 def main_loop():
-    print("🚀 PREMATCH BOT ЗАПУЩЕН", flush=True)
+    print("🚀 PREMATCH BOT (nb-bet) ЗАПУЩЕН", flush=True)
     print(f"📋 MIN_SCORE: {MIN_SCORE}", flush=True)
     print(f"⏱ CHECK_INTERVAL: {CHECK_INTERVAL}с", flush=True)
     print(f"⏰ HOURS_BEFORE: {HOURS_BEFORE}ч", flush=True)
 
     init_db()
 
-    # Кэш Understat по лигам
-    understat_cache = {}
+    # Кэш: slug матча → данные nb-bet (чтобы не дёргать API повторно)
+    nbbet_cache = {}
 
     while True:
         try:
@@ -117,7 +132,6 @@ def main_loop():
                 parsed = parse_prematch_game(g)
                 if not parsed:
                     continue
-                # Время до старта
                 delta = parsed["start_ts"] - now
                 if 0 < delta <= HOURS_BEFORE * 3600:
                     target_games.append(parsed)
@@ -129,50 +143,47 @@ def main_loop():
                 time.sleep(CHECK_INTERVAL)
                 continue
 
-            # Группируем по лигам
-            by_league = {}
+            # Проверяем каждый матч
             for m in target_games:
-                by_league.setdefault(m["league"], []).append(m)
+                cache_key = f"{m['team1']}_{m['team2']}_{m['start_ts']}"
 
-            # Для каждой лиги — загружаем Understat
-            for league, matches in by_league.items():
-                print(f"\n   🏆 {league}: {len(matches)} матчей", flush=True)
-
-                # Кэш Understat
-                if league not in understat_cache:
-                    understat_cache[league] = fetch_understat(league)
-
-                data = understat_cache[league]
-                if not data:
-                    print(f"      ❌ Нет данных Understat для {league}", flush=True)
+                if cache_key in nbbet_cache:
+                    # Уже проверяли — пропускаем
                     continue
 
-                # Проверяем каждый матч
-                for m in matches:
-                    result = check_match(m, data)
-                    if result:
-                        text = format_signal(
-                            m, result["score"], result["reasons"],
-                            result["home_stats"], result["away_stats"]
-                        )
-                        if send_telegram(text):
-                            save_signal({
-                                **m,
-                                "score": result["score"],
-                                "reasons": result["reasons"],
-                                "home_stats": result["home_stats"],
-                                "away_stats": result["away_stats"],
-                            })
-                            print(f"      📤 СИГНАЛ: {m['match']} ({result['score']}/10)", flush=True)
-                            time.sleep(2)
-                    else:
-                        print(f"      ⏸ {m['match']}: < {MIN_SCORE}", flush=True)
+                print(f"   🔍 {m['match']}...", end=" ", flush=True)
+
+                result = check_match(m)
+
+                # Запоминаем, что проверяли
+                nbbet_cache[cache_key] = True
+
+                if result:
+                    text = format_signal(
+                        m, result["score"], result["reasons"],
+                        result["home_stats"], result["away_stats"]
+                    )
+                    if send_telegram(text):
+                        save_signal({
+                            **m,
+                            "score": result["score"],
+                            "reasons": result["reasons"],
+                            "home_stats": result["home_stats"],
+                            "away_stats": result["away_stats"],
+                        })
+                        print(f"📤 СИГНАЛ ({result['score']}/10)", flush=True)
+                        time.sleep(2)
+                else:
+                    print(f"< {MIN_SCORE}", flush=True)
+
+            # Чистим кэш (чтобы не рос бесконечно)
+            if len(nbbet_cache) > 500:
+                nbbet_cache.clear()
 
             # Статистика
             stats = get_stats()
             print(f"\n📊 Всего сигналов: {stats['total']} | ✅ {stats['wins']} | ❌ {stats['loses']}", flush=True)
 
-            # Ждём
             print(f"⏱ Следующая проверка через {CHECK_INTERVAL}с", flush=True)
             time.sleep(CHECK_INTERVAL)
 
