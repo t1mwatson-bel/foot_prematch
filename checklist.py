@@ -41,8 +41,9 @@ def check_10_criteria(home_stats, away_stats, odd_tb25):
         )
 
     # --- Критерий 2: Средний тотал пары ---
-    pair_total = home_stats["avg_total"] + away_stats["avg_total"]
-    if pair_total > THRESHOLDS["pair_total"]:
+    # Средний тотал пары = среднее из средних
+      pair_total = (home_stats["avg_total"] + away_stats["avg_total"]) / 2
+     if pair_total > THRESHOLDS["pair_total"]:  # 2.70
         score += 1
         reasons.append(f"✅ Средний тотал пары: {pair_total:.2f}")
     else:
