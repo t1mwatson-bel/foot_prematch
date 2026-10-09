@@ -73,7 +73,7 @@ def format_signal(match_data, score, reasons, home_stats, away_stats):
 def check_match(match_data):
     """
     Считает чек-лист для одного матча через nb-bet.
-    Возвращает ВСЕГДА (score, reasons, home_stats, away_stats) или None.
+    Возвращает dict или None.
     """
     nbbet_data = get_match_data(
         team1=match_data["team1"],
@@ -89,7 +89,9 @@ def check_match(match_data):
     if not home_stats or not away_stats:
         return None
 
-    score, reasons = check_10_criteria(home_stats, away_stats, match_data["odd_tb25"], nbbet_data)
+    score, reasons = check_10_criteria(
+        home_stats, away_stats, match_data["odd_tb25"], nbbet_data
+    )
 
     return {
         "score": score,
@@ -103,9 +105,6 @@ def check_match(match_data):
 # =====================================================================
 # ГЛАВНЫЙ ЦИКЛ
 # =====================================================================
-# =====================================================================
-# ГЛАВНЫЙ ЦИКЛ
-# =====================================================================
 def main_loop():
     print("🚀 PREMATCH BOT (nb-bet) ЗАПУЩЕН", flush=True)
     print(f"📋 MIN_SCORE: {MIN_SCORE}", flush=True)
@@ -114,7 +113,7 @@ def main_loop():
 
     init_db()
 
-    # Кэш: slug матча → данные nb-bet (чтобы не дёргать API повторно)
+    # Кэш: ключ матча → уже проверяли
     nbbet_cache = {}
 
     while True:
@@ -143,7 +142,7 @@ def main_loop():
                 time.sleep(CHECK_INTERVAL)
                 continue
 
-            # Проверяем каждый матч (ТОЛЬКО ОДИН РАЗ)
+            # Проверяем каждый матч
             for m in target_games:
                 # Пропускаем плейсхолдеры
                 if is_placeholder(m['team1']) or is_placeholder(m['team2']):
@@ -168,7 +167,7 @@ def main_loop():
 
                 print(f"score={score}/10", flush=True)
 
-                # 🔥 ЕДИНСТВЕННАЯ ПРОВЕРКА MIN_SCORE
+                # Проверка MIN_SCORE — единственное место, где отправляем сигнал
                 if score >= MIN_SCORE:
                     text = format_signal(
                         m, score, reasons,
@@ -188,6 +187,9 @@ def main_loop():
                     # Логируем причины, но НЕ отправляем
                     for r in reasons:
                         print(f"      {r}", flush=True)
+
+                # Пауза между матчами, чтобы не упереться в лимиты хостинга
+                time.sleep(1)
 
             # Чистим кэш
             if len(nbbet_cache) > 500:
