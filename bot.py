@@ -103,6 +103,9 @@ def check_match(match_data):
 # =====================================================================
 # ГЛАВНЫЙ ЦИКЛ
 # =====================================================================
+# =====================================================================
+# ГЛАВНЫЙ ЦИКЛ
+# =====================================================================
 def main_loop():
     print("🚀 PREMATCH BOT (nb-bet) ЗАПУЩЕН", flush=True)
     print(f"📋 MIN_SCORE: {MIN_SCORE}", flush=True)
@@ -140,7 +143,7 @@ def main_loop():
                 time.sleep(CHECK_INTERVAL)
                 continue
 
-            # Проверяем каждый матч
+            # Проверяем каждый матч (ТОЛЬКО ОДИН РАЗ)
             for m in target_games:
                 # Пропускаем плейсхолдеры
                 if is_placeholder(m['team1']) or is_placeholder(m['team2']):
@@ -155,59 +158,37 @@ def main_loop():
                 result = check_match(m)
                 nbbet_cache[cache_key] = True
 
-                if result:
-                    score = result["score"]
-                    reasons = result["reasons"]
-
-                    print(f"score={score}/10", flush=True)
-
-                    if score >= MIN_SCORE:
-                        text = format_signal(
-                            m, score, reasons,
-                            result["home_stats"], result["away_stats"]
-                        )
-                        if send_telegram(text):
-                            save_signal({
-                                **m,
-                                "score": score,
-                                "reasons": reasons,
-                                "home_stats": result["home_stats"],
-                                "away_stats": result["away_stats"],
-                            })
-                            print(f"      📤 СИГНАЛ ОТПРАВЛЕН", flush=True)
-                            time.sleep(2)
-                    else:
-                        for r in reasons:
-                            print(f"      {r}", flush=True)
-                else:
+                if not result:
                     print(f"❌ нет данных", flush=True)
+                    continue
 
-                print(f"   🔍 {m['match']}...", end=" ", flush=True)
+                score = result["score"]
+                reasons = result["reasons"]
 
-                result = check_match(m)
+                print(f"score={score}/10", flush=True)
 
-                # Запоминаем, что проверяли
-                nbbet_cache[cache_key] = True
-
-                if result:
+                # 🔥 ЕДИНСТВЕННАЯ ПРОВЕРКА MIN_SCORE
+                if score >= MIN_SCORE:
                     text = format_signal(
-                        m, result["score"], result["reasons"],
+                        m, score, reasons,
                         result["home_stats"], result["away_stats"]
                     )
                     if send_telegram(text):
                         save_signal({
                             **m,
-                            "score": result["score"],
-                            "reasons": result["reasons"],
+                            "score": score,
+                            "reasons": reasons,
                             "home_stats": result["home_stats"],
                             "away_stats": result["away_stats"],
                         })
-                        print(f"📤 СИГНАЛ ({result['score']}/10)", flush=True)
+                        print(f"      📤 СИГНАЛ ОТПРАВЛЕН ({score}/10)", flush=True)
                         time.sleep(2)
                 else:
-                    print(f"< {MIN_SCORE}", flush=True)
+                    # Логируем причины, но НЕ отправляем
+                    for r in reasons:
+                        print(f"      {r}", flush=True)
 
-            # Чистим кэш (чтобы не рос бесконечно)
+            # Чистим кэш
             if len(nbbet_cache) > 500:
                 nbbet_cache.clear()
 
