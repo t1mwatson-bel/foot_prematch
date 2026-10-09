@@ -73,9 +73,8 @@ def format_signal(match_data, score, reasons, home_stats, away_stats):
 def check_match(match_data):
     """
     Считает чек-лист для одного матча через nb-bet.
-    match_data = {team1, team2, league, match, start_ts, odd_tb25, ...}
+    Возвращает ВСЕГДА (score, reasons, home_stats, away_stats) или None.
     """
-    # Получаем данные из nb-bet по названиям команд
     nbbet_data = get_match_data(
         team1=match_data["team1"],
         team2=match_data["team2"],
@@ -92,15 +91,13 @@ def check_match(match_data):
 
     score, reasons = check_10_criteria(home_stats, away_stats, match_data["odd_tb25"])
 
-    if score >= MIN_SCORE:
-        return {
-            "score": score,
-            "reasons": reasons,
-            "home_stats": home_stats,
-            "away_stats": away_stats,
-            "nbbet_data": nbbet_data,
-        }
-    return None
+    return {
+        "score": score,
+        "reasons": reasons,
+        "home_stats": home_stats,
+        "away_stats": away_stats,
+        "nbbet_data": nbbet_data,
+    }
 
 
 # =====================================================================
@@ -145,11 +142,45 @@ def main_loop():
 
             # Проверяем каждый матч
             for m in target_games:
-                cache_key = f"{m['team1']}_{m['team2']}_{m['start_ts']}"
-
-                if cache_key in nbbet_cache:
-                    # Уже проверяли — пропускаем
+                # Пропускаем плейсхолдеры
+                if is_placeholder(m['team1']) or is_placeholder(m['team2']):
                     continue
+
+                cache_key = f"{m['team1']}_{m['team2']}_{m['start_ts']}"
+                if cache_key in nbbet_cache:
+                    continue
+
+                print(f"   🔍 {m['match']}...", end=" ", flush=True)
+
+                result = check_match(m)
+                nbbet_cache[cache_key] = True
+
+                if result:
+                    score = result["score"]
+                    reasons = result["reasons"]
+
+                    print(f"score={score}/10", flush=True)
+
+                    if score >= MIN_SCORE:
+                        text = format_signal(
+                            m, score, reasons,
+                            result["home_stats"], result["away_stats"]
+                        )
+                        if send_telegram(text):
+                            save_signal({
+                                **m,
+                                "score": score,
+                                "reasons": reasons,
+                                "home_stats": result["home_stats"],
+                                "away_stats": result["away_stats"],
+                            })
+                            print(f"      📤 СИГНАЛ ОТПРАВЛЕН", flush=True)
+                            time.sleep(2)
+                    else:
+                        for r in reasons:
+                            print(f"      {r}", flush=True)
+                else:
+                    print(f"❌ нет данных", flush=True)
 
                 print(f"   🔍 {m['match']}...", end=" ", flush=True)
 
