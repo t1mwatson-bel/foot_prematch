@@ -50,6 +50,7 @@ def fetch_understat(league_name):
             return None
 
         html = r.text
+        print(f"   🔎 HTML первые 800 символов:\n{html[:800]}\n", flush=True)
 
         # Ищем все переменные с JSON.parse — узнаём новое имя
         all_vars = re.findall(r"var\s+(\w+)\s*=\s*JSON\.parse", html)
