@@ -5,7 +5,7 @@
 THRESHOLDS = {
     "over_pct": 0.55,
     "pair_total": 2.70,
-    "xg_sum": 2.70,
+    "xg_sum": 3.5,
     "home_scored": 1.50,
     "away_scored": 1.20,
     "missed": 1.00,
@@ -38,12 +38,12 @@ def check_10_criteria(home_stats, away_stats, odd_tb25):
         reasons.append(f"❌ Средний тотал пары: {pair_total:.2f}")
 
     # Критерий 3: Средний xG пары
-    xg_avg = (home_stats["avg_xg"] + away_stats["avg_xg"]) / 2
-    if xg_avg > THRESHOLDS["xg_sum"]:
-        score += 1
-        reasons.append(f"✅ Средний xG пары: {xg_avg:.2f}")
-    else:
-        reasons.append(f"❌ Средний xG пары: {xg_avg:.2f}")
+    xg_sum = home_stats["avg_xg"] + away_stats["avg_xg"]
+    if xg_sum > THRESHOLDS["xg_sum"]:
+    score += 1
+    reasons.append(f"✅ Суммарный xG пары: {xg_sum:.2f}")
+else:
+    reasons.append(f"❌ Суммарный xG пары: {xg_sum:.2f}")
 
     # Критерий 4: Атака хозяев
     if home_stats["avg_scored_home"] > THRESHOLDS["home_scored"]:
