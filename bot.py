@@ -7,7 +7,7 @@ import requests
 from datetime import datetime
 
 from config import BOT_TOKEN, CHAT_ID, API, MIN_SCORE, CHECK_INTERVAL, HOURS_BEFORE
-from nbbet_stats import get_match_data
+from nbbet_stats import get_match_data, is_placeholder
 from checklist import check_10_criteria
 from onexbet import get_prematch_games, parse_prematch_game
 from database import init_db, save_signal, get_stats
