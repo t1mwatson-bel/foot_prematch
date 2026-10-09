@@ -89,7 +89,7 @@ def check_match(match_data):
     if not home_stats or not away_stats:
         return None
 
-    score, reasons = check_10_criteria(home_stats, away_stats, match_data["odd_tb25"])
+    score, reasons = check_10_criteria(home_stats, away_stats, match_data["odd_tb25"], nbbet_data)
 
     return {
         "score": score,
