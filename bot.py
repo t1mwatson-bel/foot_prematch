@@ -160,6 +160,7 @@ def main_loop():
 
                 if not result:
                     print(f"❌ нет данных", flush=True)
+                    time.sleep(1)
                     continue
 
                 score = result["score"]
