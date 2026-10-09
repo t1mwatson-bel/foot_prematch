@@ -51,11 +51,17 @@ def fetch_understat(league_name):
 
         html = r.text
 
-        # Проверяем, есть ли вообще teamsData в HTML
-        if "teamsData" not in html:
-            print(f"   ❌ Understat {league_name}: 'teamsData' НЕ найдена в HTML", flush=True)
-            print(f"   🔎 Первые 500 символов: {html[:500]}", flush=True)
-            return None
+        # Ищем все переменные с JSON.parse — узнаём новое имя
+import re as _re
+all_vars = _re.findall(r"var\s+(\w+)\s*=\s*JSON\.parse", html)
+print(f"   🔎 Найдены переменные: {all_vars}", flush=True)
+
+# Показываем, какие ключевые слова есть в HTML
+for kw in ["teamsData", "teamsStats", "datesData", "playersData", "leagueData"]:
+    if kw in html:
+        print(f"   💡 Найдено: {kw}", flush=True)
+
+return None  # пока не парсим
 
         # Ищем переменную teamsData
         match = re.search(r"var teamsData\s*=\s*JSON\.parse\('(.+?)'\)", html)
