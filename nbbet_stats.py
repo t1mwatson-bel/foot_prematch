@@ -56,7 +56,7 @@ TEAM_ALIASES = {
     "хольштайн": "holstein",
     "кайзерслаутерн": "kaiserslautern",
     "хайденхайм": "heidenheim",
-    
+
     # Англия
     "манчестер юнайтед": "manchester-united",
     "манчестер сити": "manchester-city",
@@ -76,10 +76,11 @@ TEAM_ALIASES = {
     "лестер": "leicester",
     "саутгемптон": "southampton",
     "ипсвич": "ipswich",
+    "ипсвич таун": "ipswich",
     "ноттингем форест": "nottingham-forest",
     "борнмут": "bournemouth",
     "брентфорд": "brentford",
-    
+
     # Испания
     "реал мадрид": "real-madrid",
     "барселона": "barcelona",
@@ -104,7 +105,7 @@ TEAM_ALIASES = {
     "малага": "malaga",
     "леганес": "leganes",
     "реал вальядолид": "real-valladolid",
-    
+
     # Италия
     "ювентус": "juventus",
     "интер": "inter",
@@ -126,7 +127,7 @@ TEAM_ALIASES = {
     "комо": "como",
     "венеция": "venezia",
     "монца": "monza",
-    
+
     # Франция
     "псж": "psg",
     "пари сен-жермен": "psg",
@@ -149,7 +150,7 @@ TEAM_ALIASES = {
     "оксер": "auxerre",
     "брест": "brest",
     "монпелье": "montpellier",
-    
+
     # Россия
     "зенит": "zenit",
     "спартак": "spartak",
@@ -197,8 +198,8 @@ def clean_team_name(name):
     """Убирает лишнее из названия команды."""
     if not name:
         return ""
-    name = re.sub(r'\s*\(.*?\)\s*', '', name)  # убираем (специальное)
-    name = re.sub(r'\s+\d+$', '', name)        # убираем "05", "07"
+    name = re.sub(r'\s*\(.*?\)\s*', '', name)
+    name = re.sub(r'\s+\d+$', '', name)
     return name.strip()
 
 
@@ -214,17 +215,14 @@ def get_team_query(name):
     """Возвращает поисковый запрос для команды."""
     name_clean = clean_team_name(name)
     name_lower = name_clean.lower()
-    
-    # Сначала проверяем маппинг
+
     if name_lower in TEAM_ALIASES:
         return TEAM_ALIASES[name_lower]
-    
-    # Проверяем частичное совпадение (первое слово)
+
     first_word = name_lower.split()[0] if name_lower.split() else name_lower
     if first_word in TEAM_ALIASES:
         return TEAM_ALIASES[first_word]
-    
-    # Fallback: транслит
+
     return translit(first_word)
 
 
@@ -243,30 +241,30 @@ def get_build_id():
 
 
 # =====================================================================
-# ПОИСК МАТЧА
+# ПОИСК МАТЧА (СТРОГИЙ)
 # =====================================================================
 def find_match_slug(team1, team2):
     """
     Ищет slug матча в nb-bet по названиям команд.
+    Строгий поиск: обе команды должны совпасть.
     Возвращает slug или None.
     """
-    # Пропускаем плейсхолдеры
     if is_placeholder(team1) or is_placeholder(team2):
         return None
-    
+
     query1 = get_team_query(team1)
     query2 = get_team_query(team2)
-    
+
     # Ищем по первой команде
     slug = _search_by_query(query1, query2)
     if slug:
         return slug
-    
+
     # Fallback: ищем по второй команде
     slug = _search_by_query(query2, query1)
     if slug:
         return slug
-    
+
     return None
 
 
@@ -274,39 +272,45 @@ def _search_by_query(query, other_query):
     """Ищет по query, проверяя other_query в результатах."""
     url = f"{NB_API}/v1/soccer/search/"
     params = {"query": query}
-    
+
     try:
         r = requests.get(url, headers=API_HEADERS, params=params, timeout=15)
         if r.status_code != 200:
             return None
         data = r.json()
-    except Exception:
+    except Exception as e:
+        print(f"⚠️ Search {query}: {e}", flush=True)
         return None
-    
+
     results = data.get("data", [])
     if not results:
         return None
-    
-    # Ищем совпадение по обеим командам
-    other_lower = other_query.lower()
-    
+
+    q1 = query.lower()
+    q2 = other_query.lower()
+
+    # 🔥 СТРОГИЙ ПОИСК: обе команды должны совпасть
     for item in results:
+        # type: 6 = матч, 5 = команда (пропускаем)
+        if item.get("type") != 6:
+            continue
+
         title = item.get("title", [])
         if len(title) < 2:
             continue
+
         n1 = title[0].lower()
         n2 = title[1].lower()
-        
-        # Проверяем, есть ли other_query в одном из названий
-        match1 = (query.lower()[:5] in n1 or n1[:5] in query.lower())
-        match2 = (other_lower[:5] in n2 or n2[:5] in other_lower)
-        
+
+        # Проверяем совпадение по первым 3 символам
+        match1 = q1[:3] in n1 or n1[:3] in q1
+        match2 = q2[:3] in n2 or n2[:3] in q2
+
         if match1 and match2:
             return item.get("link")
-    
-    # Если точного совпадения нет — берём первый результат
-    # (риск, но лучше чем ничего)
-    return results[0].get("link")
+
+    # Не нашли пару — возвращаем None
+    return None
 
 
 # =====================================================================
@@ -323,32 +327,83 @@ def fetch_match_base(match_slug):
         r = requests.get(url, headers=NB_HEADERS, params=params, timeout=20)
         if r.status_code != 200:
             return None
-        # Проверяем, что это JSON
         ct = r.headers.get("content-type", "")
         if "json" not in ct.lower() and not r.text.strip().startswith("{"):
             return None
         return r.json()
     except Exception:
-        # Молча — не критично
         return None
 
 
-def fetch_match_summary(match_slug):
+def fetch_match_summary(match_slug, retries=3):
     """Расширенная статистика (xG, xGOT, xA). Критично."""
     url = (
         f"{NB_API}/v1/soccer/events/summary/{match_slug}/"
         f"50/12/true/false/true/false/true"
     )
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, headers=API_HEADERS, timeout=20)
+            if r.status_code != 200:
+                if attempt < retries - 1:
+                    time.sleep(1)
+                    continue
+                return None
+            ct = r.headers.get("content-type", "")
+            if "json" not in ct.lower() and not r.text.strip().startswith("{"):
+                return None
+            return r.json()
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(1)
+                continue
+            print(f"❌ Summary {match_slug}: {e}", flush=True)
+            return None
+    return None
+
+
+def fetch_match_result(match_slug):
+    """
+    Получает результат завершённого матча.
+    Возвращает dict {home, away, total, status} или None.
+    """
+    url = f"{NB_API}/v1/soccer/events/{match_slug}"
     try:
-        r = requests.get(url, headers=API_HEADERS, timeout=20)
+        r = requests.get(url, headers=API_HEADERS, timeout=15)
         if r.status_code != 200:
             return None
-        ct = r.headers.get("content-type", "")
-        if "json" not in ct.lower() and not r.text.strip().startswith("{"):
+        data = r.json()
+
+        # Структура ответа может отличаться — ищем счёт в разных местах
+        # Вариант 1: data.match.score
+        match = data.get("match") or data.get("data", {})
+
+        # Пробуем разные ключи
+        home_score = (
+            match.get("score_home")
+            or match.get("home_score")
+            or match.get("scoreHome")
+            or (match.get("score") or {}).get("home")
+        )
+        away_score = (
+            match.get("score_away")
+            or match.get("away_score")
+            or match.get("scoreAway")
+            or (match.get("score") or {}).get("away")
+        )
+        status = match.get("status") or match.get("matchStatus") or ""
+
+        if home_score is None or away_score is None:
             return None
-        return r.json()
+
+        return {
+            "home": int(home_score),
+            "away": int(away_score),
+            "total": int(home_score) + int(away_score),
+            "status": status,
+        }
     except Exception as e:
-        print(f"❌ Summary {match_slug}: {e}", flush=True)
+        print(f"⚠️ Result {match_slug}: {e}", flush=True)
         return None
 
 
@@ -360,15 +415,17 @@ def parse_summary(summary_data):
     data = summary_data.get("data", [])
     if not data or len(data) < 1:
         return None
-    
+
     all_matches = data[0]
     if len(all_matches) < 2:
         return None
-    
+
     home = all_matches[0]
     away = all_matches[1]
-    
+
     def team_dict(t):
+        if not t:
+            return {}
         return {
             "matches": t.get("1"),
             "wins": t.get("2"),
@@ -408,7 +465,7 @@ def parse_summary(summary_data):
             # Опасные атаки (102-104)
             "dangerous_attacks": t.get("103"),
         }
-    
+
     return {
         "home": team_dict(home),
         "away": team_dict(away),
@@ -443,14 +500,14 @@ def parse_base_for_checklist(base_data, summary_data):
     """Объединяет базовые данные и summary в формат для checklist."""
     if not summary_data:
         return None
-    
+
     parsed = parse_summary(summary_data)
     if not parsed:
         return None
-    
+
     h = parsed["home"]
     a = parsed["away"]
-    
+
     home_stats = {
         "over_pct": calc_over_pct(h.get("avg_total")),
         "avg_total": h.get("avg_total") or 0,
@@ -463,7 +520,7 @@ def parse_base_for_checklist(base_data, summary_data):
         "yellow_cards": h.get("yellow_cards"),
         "possession": h.get("possession"),
     }
-    
+
     away_stats = {
         "over_pct": calc_over_pct(a.get("avg_total")),
         "avg_total": a.get("avg_total") or 0,
@@ -476,7 +533,7 @@ def parse_base_for_checklist(base_data, summary_data):
         "yellow_cards": a.get("yellow_cards"),
         "possession": a.get("possession"),
     }
-    
+
     return {
         "home_stats": home_stats,
         "away_stats": away_stats,
@@ -492,6 +549,8 @@ def get_match_data(team1=None, team2=None, match_slug=None):
     Главная функция.
       get_match_data(team1="Ланс", team2="Лион")
       get_match_data(match_slug="1601494-lans-lion-prognoz-na-match")
+
+    Возвращает None, если xG = 0 (нет данных) — чтобы не отправлять сигнал.
     """
     if not match_slug:
         if not team1 or not team2:
@@ -499,49 +558,49 @@ def get_match_data(team1=None, team2=None, match_slug=None):
         match_slug = find_match_slug(team1, team2)
         if not match_slug:
             return None
-    
-    # Базовые данные (не критично, если не получим)
+
+    # Базовые данные (не критично)
     base = fetch_match_base(match_slug)
-    
+
     # Summary (критично)
     summary = fetch_match_summary(match_slug)
-    
+
     if not summary:
         return None
-    
+
     result = parse_base_for_checklist(base, summary)
-    if result:
-        result["match_slug"] = match_slug
-        if base:
-            match = base.get("props", {}).get("initialState", {}).get("pageSoccerEvent", {}).get("match", {})
-            block27 = match.get("27", {})
-            block18 = match.get("18", {})
-            
-            result["motivation_home"] = block27.get("4", [{}])[0].get("motivation_value") if block27.get("4") else None
-            result["motivation_away"] = block27.get("4", [{}, {}])[1].get("motivation_value") if len(block27.get("4", [])) > 1 else None
-            result["injuries_text"] = block27.get("5")
-            result["referee"] = block18.get("1", {}).get("8")
-            result["stadium"] = block18.get("2")
-            result["weather"] = f"{block18.get('4')}, {block18.get('3')}"
-    
+    if not result:
+        return None
+
+    result["match_slug"] = match_slug
+
+    # 🔥 Проверка: если xG = 0 для обеих команд — не отправляем
+    home_xg = result["home_stats"].get("avg_xg") or 0
+    away_xg = result["away_stats"].get("avg_xg") or 0
+    if home_xg == 0 and away_xg == 0:
+        print(f"      ⏭ xG = 0, пропуск {match_slug}", flush=True)
+        return None
+
+    if base:
+        match = base.get("props", {}).get("initialState", {}).get("pageSoccerEvent", {}).get("match", {})
+        block27 = match.get("27", {})
+        block18 = match.get("18", {})
+
+        result["motivation_home"] = block27.get("4", [{}])[0].get("motivation_value") if block27.get("4") else None
+        result["motivation_away"] = block27.get("4", [{}, {}])[1].get("motivation_value") if len(block27.get("4", [])) > 1 else None
+        result["injuries_text"] = block27.get("5")
+        result["referee"] = block18.get("1", {}).get("8")
+        result["stadium"] = block18.get("2")
+        result["weather"] = f"{block18.get('4')}, {block18.get('3')}"
+
     return result
 
 
 if __name__ == "__main__":
-    # Тесты
-    print("=== Тест 1: Ланс — Лион ===")
-    data = get_match_data(team1="Ланс", team2="Лион")
+    print("=== Тест: Ипсвич — Фулхэм ===")
+    data = get_match_data(team1="Ипсвич Таун", team2="Фулхэм")
     if data:
-        print(json.dumps(data, ensure_ascii=False, indent=2))
+        print(json.dumps(data["home_stats"], ensure_ascii=False, indent=2))
+        print(json.dumps(data["away_stats"], ensure_ascii=False, indent=2))
     else:
         print("❌ Не удалось получить данные")
-    
-    print("\n=== Тест 2: find_match_slug ===")
-    for t1, t2 in [
-        ("Боруссия", "Вердер"),
-        ("Майнц 05", "Байер"),
-        ("Хоффенхайм", "Гамбург"),
-        ("Хозяева", "Гости"),
-    ]:
-        slug = find_match_slug(t1, t2)
-        print(f"  {t1} — {t2} → {slug}")
