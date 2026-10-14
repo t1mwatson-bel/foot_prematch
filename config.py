@@ -40,6 +40,18 @@ LEAGUES = {
         "understat": "РПЛ",
         "1xlite_id": 225733,
     },
+    "Лига Чемпионов": {
+        "understat": None,  # Understat НЕ покрывает ЛЧ
+        "1xlite_id": 118587,
+    },
+    "Лига Европы": {
+        "understat": None,
+        "1xlite_id": 118593,
+    },
+    "Лига Конференций": {
+        "understat": None,
+        "1xlite_id": 2252762,
+    },
 }
 
 BASE_URL = "https://1xlite-8150.pro"
