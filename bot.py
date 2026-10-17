@@ -5,9 +5,11 @@ import threading
 from datetime import datetime
 from flask import Flask, render_template_string
 from collections import defaultdict
+import os
+import re
 
 from config import BOT_TOKEN, CHAT_ID, API, MIN_SCORE, CHECK_INTERVAL, HOURS_BEFORE
-from nbbet_stats import get_match_data, is_placeholder
+from nbbet_stats import get_match_data, is_placeholder, fetch_via_proxy, NB_API
 from checklist import check_10_criteria
 from onexbet import get_prematch_games, parse_prematch_game
 import database as db
@@ -112,8 +114,7 @@ def index():
             day = datetime.fromtimestamp(s['sent_at']).strftime('%d.%m')
             daily_profit[day] += s['profit']
     
-    chart_labels = []
-    chart_data = []
+    chart_labels, chart_data = [], []
     cumulative = 0
     for day in sorted(daily_profit.keys(), key=lambda d: datetime.strptime(d, '%d.%m')):
         cumulative += daily_profit[day]
@@ -128,7 +129,6 @@ def health():
     return "OK", 200
 
 def run_web():
-    # Bothost требует порт 3000
     app.run(host='0.0.0.0', port=3000, use_reloader=False)
 
 # =====================================================================
@@ -153,17 +153,52 @@ def format_signal(match_data, score, reasons, home_stats, away_stats):
         f"<b>{match_data['team2']}</b>: xG {away_stats.get('avg_xg', 0):.2f} | Забивает {away_stats.get('avg_scored_away', 0):.2f} | Пропускает {away_stats.get('avg_missed_away', 0):.2f}",
         "", f"📋 <b>ЧЕК-ЛИСТ:</b>"
     ]
-    for r in reasons: lines.append(f"  {r}")
+    for r in reasons: 
+        lines.append(f"  {r}")
+        
     lines.append("")
     lines.append(f"💰 <b>Кэф ТБ 2.5: {match_data['odd_tb25']}</b>")
     lines.append(f"💡 <b>СИГНАЛ: ТБ 2.5</b>")
-    return "\\n".join(lines)
+    return "\n".join(lines)
+
+def get_match_data_with_details(team1, team2):
+    """Обертка для получения данных + травмы/мотивация через HTML."""
+    base_data = get_match_data(team1=team1, team2=team2)
+    if not base_data:
+        return None
+        
+    slug = base_data.get("match_slug")
+    if not slug:
+        return base_data
+
+    # Подтягиваем травмы и мотивацию
+    url_html = f"https://nb-bet.com/Events/{slug}"
+    html = fetch_via_proxy(url_html)
+    if html:
+        try:
+            match_json = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.DOTALL)
+            if match_json:
+                page_data = json.loads(match_json.group(1))
+                initial = page_data.get("props", {}).get("initialState", {})
+                match_info = initial.get("pageSoccerEvent", {}).get("match", {})
+                
+                if match_info:
+                    block27 = match_info.get("27", {})
+                    base_data["motivation_home"] = block27.get("4", [{}])[0].get("motivation_value") if block27.get("4") else None
+                    base_data["motivation_away"] = block27.get("4", [{}, {}])[1].get("motivation_value") if len(block27.get("4", [])) > 1 else None
+                    base_data["injuries_text"] = block27.get("5")
+        except Exception:
+            pass
+
+    return base_data
 
 def check_match(match_data):
-    nbbet_data = get_match_data(team1=match_data["team1"], team2=match_data["team2"])
+    nbbet_data = get_match_data_with_details(match_data["team1"], match_data["team2"])
     if not nbbet_data: return None
+    
     home_stats, away_stats = nbbet_data.get("home_stats"), nbbet_data.get("away_stats")
     if not home_stats or not away_stats: return None
+    
     score, reasons = check_10_criteria(home_stats, away_stats, match_data["odd_tb25"], nbbet_data)
     return {"score": score, "reasons": reasons, "home_stats": home_stats, "away_stats": away_stats, "nbbet_data": nbbet_data}
 
@@ -174,7 +209,7 @@ def bot_loop():
     while True:
         try:
             now = int(time.time())
-            print(f"\\n🔄 Проверка: {datetime.now().strftime('%H:%M:%S')}", flush=True)
+            print(f"\n🔄 Проверка: {datetime.now().strftime('%H:%M:%S')}", flush=True)
             games = get_prematch_games()
             target_games = []
             for g in games:
@@ -213,10 +248,42 @@ def bot_loop():
             print(f"❌ Ошибка: {e}", flush=True)
             time.sleep(60)
 
+# Функция проверки результатов
+def check_results_loop():
+    print("🔄 Поток проверки результатов запущен", flush=True)
+    while True:
+        try:
+            pending = db.get_pending_signals()
+            if pending:
+                print(f"🔍 Проверяем результаты ({len(pending)} ожидают)...", flush=True)
+                for s in pending:
+                    slug = s['match_slug']
+                    if not slug: continue
+                    
+                    # Получаем счет
+                    url = f"{NB_API}/v1/soccer/events/{slug}"
+                    html = fetch_via_proxy(url)
+                    if not html: continue
+                        
+                    try:
+                        data = json.loads(html)
+                        match_data = data.get("match", data.get("data", {}))
+                        home = match_data.get("score_home") or match_data.get("home_score")
+                        away = match_data.get("score_away") or match_data.get("away_score")
+                        if home is not None and away is not None:
+                            db.update_result(slug, int(home) + int(away))
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"❌ Ошибка проверки результатов: {e}", flush=True)
+            
+        time.sleep(1800)
+
 if __name__ == "__main__":
-    # Запускаем сайт в фоне на порту 3000
     web_thread = threading.Thread(target=run_web, daemon=True)
     web_thread.start()
     
-    # Запускаем бота
+    result_thread = threading.Thread(target=check_results_loop, daemon=True)
+    result_thread.start()
+    
     bot_loop()
