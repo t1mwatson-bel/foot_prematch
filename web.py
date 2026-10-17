@@ -186,4 +186,8 @@ def index():
 
 if __name__ == '__main__':
     db.init_db()
-    app.run(host='0.0.0.0', port=8080)
+    import os
+    # Берем порт из переменной окружения (Bothost сам её подставляет)
+    port = int(os.environ.get("PORT", 8000))
+    # Обязательно слушаем 0.0.0.0, иначе прокси не достучится
+    app.run(host='0.0.0.0', port=port)
