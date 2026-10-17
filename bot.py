@@ -71,10 +71,6 @@ def format_signal(match_data, score, reasons, home_stats, away_stats):
 # ПРОВЕРКА МАТЧА
 # =====================================================================
 def check_match(match_data):
-    """
-    Считает чек-лист для одного матча через nb-bet.
-    Возвращает dict или None.
-    """
     nbbet_data = get_match_data(
         team1=match_data["team1"],
         team2=match_data["team2"],
@@ -112,8 +108,6 @@ def main_loop():
     print(f"⏰ HOURS_BEFORE: {HOURS_BEFORE}ч", flush=True)
 
     init_db()
-
-    # Кэш: ключ матча → уже проверяли (только успешные проверки!)
     nbbet_cache = {}
 
     while True:
@@ -121,11 +115,9 @@ def main_loop():
             now = int(time.time())
             print(f"\n🔄 Проверка: {datetime.now().strftime('%H:%M:%S')}", flush=True)
 
-            # Получаем прематч-линию
             games = get_prematch_games()
             print(f"   📋 Матчей в линии: {len(games)}", flush=True)
 
-            # Фильтруем: только наши лиги и ближайшие HOURS_BEFORE
             target_games = []
             for g in games:
                 parsed = parse_prematch_game(g)
@@ -142,15 +134,12 @@ def main_loop():
                 time.sleep(CHECK_INTERVAL)
                 continue
 
-            # Проверяем каждый матч
             for m in target_games:
-                # Пропускаем плейсхолдеры
                 if is_placeholder(m['team1']) or is_placeholder(m['team2']):
                     continue
 
                 cache_key = f"{m['team1']}_{m['team2']}_{m['start_ts']}"
                 
-                # 🔥 ВАЖНО: пропускаем только если УЖЕ УСПЕШНО проверили и отправили
                 if cache_key in nbbet_cache:
                     continue
 
@@ -168,42 +157,36 @@ def main_loop():
 
                 print(f"score={score}/10", flush=True)
 
-                # Проверка MIN_SCORE — единственное место, где отправляем сигнал
                 if score >= MIN_SCORE:
                     text = format_signal(
                         m, score, reasons,
                         result["home_stats"], result["away_stats"]
                     )
                     if send_telegram(text):
-                        save_signal({
+                        # 🔥 СОХРАНЯЕМ В БАЗУ
+                        db_data = {
                             **m,
+                            "match_slug": result["nbbet_data"].get("match_slug"),
                             "score": score,
                             "reasons": reasons,
                             "home_stats": result["home_stats"],
                             "away_stats": result["away_stats"],
-                        })
-                        print(f"      📤 СИГНАЛ ОТПРАВЛЕН ({score}/10)", flush=True)
+                        }
+                        save_signal(db_data)
                         
-                        # 🔥 Записываем в кэш ТОЛЬКО после успешной отправки
+                        print(f"      📤 СИГНАЛ ОТПРАВЛЕН ({score}/10)", flush=True)
                         nbbet_cache[cache_key] = True
                         time.sleep(2)
                 else:
-                    # Логируем причины, но НЕ отправляем
                     for r in reasons:
                         print(f"      {r}", flush=True)
-                        
-                    # 🔥 Если score < MIN_SCORE, записываем в кэш, 
-                    # чтобы не спамить логами каждый час (но матч уже не изменится)
                     nbbet_cache[cache_key] = True
 
-                # Пауза между матчами
                 time.sleep(1)
 
-            # Чистим кэш
             if len(nbbet_cache) > 500:
                 nbbet_cache.clear()
 
-            # Статистика
             stats = get_stats()
             print(f"\n📊 Всего сигналов: {stats['total']} | ✅ {stats['wins']} | ❌ {stats['loses']}", flush=True)
 
