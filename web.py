@@ -1,8 +1,8 @@
-# web.py
 from flask import Flask, render_template_string
 import database as db
 from datetime import datetime
 from collections import defaultdict
+import os
 
 app = Flask(__name__)
 
@@ -15,126 +15,65 @@ HTML_TEMPLATE = """
     <title>Статистика Бота</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 20px; }
-        .container { max-width: 1100px; margin: auto; }
-        h1 { font-weight: 600; margin-bottom: 30px; color: #38bdf8; }
-        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
-        .card { background: #1e293b; padding: 20px; border-radius: 12px; text-align: center; border: 1px solid #334155; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
-        .card h3 { margin: 0 0 10px 0; color: #94a3b8; font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; }
-        .card .val { font-size: 32px; font-weight: 700; }
-        .win { color: #10b981; }
-        .lose { color: #ef4444; }
-        .pending { color: #f59e0b; }
-        .profit-pos { color: #10b981; }
-        .profit-neg { color: #ef4444; }
-        .chart-container { background: #1e293b; padding: 20px; border-radius: 12px; margin-bottom: 30px; border: 1px solid #334155; height: 350px; }
-        table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 12px; overflow: hidden; border: 1px solid #334155; }
-        th, td { padding: 14px; text-align: left; border-bottom: 1px solid #334155; }
-        th { background: #0f172a; font-weight: 600; color: #94a3b8; font-size: 13px; text-transform: uppercase; }
-        tr:hover { background: #334155; }
-        .badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; }
-        .badge-win { background: rgba(16, 185, 129, 0.2); color: #10b981; }
-        .badge-lose { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
-        .badge-pending { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
+        body { font-family: Inter, Arial, sans-serif; background: radial-gradient(circle at top, #101828 0%, #06090f 45%, #03050a 100%); color: #fff; margin: 0; padding: 20px; min-height: 100vh; }
+        .container { max-width: 1400px; margin: auto; }
+        .header { text-align: center; margin-bottom: 30px; }
+        .logo { font-size: 32px; font-weight: 900; letter-spacing: 3px; text-shadow: 0 0 10px rgba(0, 255, 200, .6), 0 0 20px rgba(0, 200, 255, .5); }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 25px; }
+        .card { background: linear-gradient(145deg, rgba(20, 30, 50, .65), rgba(10, 15, 25, .45)); border: 1px solid rgba(0, 200, 255, .15); border-radius: 18px; padding: 22px; text-align: center; box-shadow: 0 10px 30px rgba(0, 0, 0, .45); }
+        .card h3 { color: #8995a8; font-size: 13px; margin-bottom: 10px; text-transform: uppercase; }
+        .val { font-size: 32px; font-weight: 800; }
+        .green { color: #4cff9b; text-shadow: 0 0 12px rgba(76, 255, 155, .7); }
+        .red { color: #ff5d70; text-shadow: 0 0 12px rgba(255, 93, 112, .7); }
+        .blue { color: #65aaff; }
+        .orange { color: #ffbd66; }
+        .section { background: rgba(255, 255, 255, .03); border: 1px solid rgba(0, 200, 255, .12); border-radius: 20px; padding: 22px; margin-bottom: 25px; }
+        .section-title { font-size: 20px; font-weight: 800; margin-bottom: 18px; text-shadow: 0 0 8px rgba(0, 255, 200, .5); }
+        .chart-container { height: 300px; }
+        table { width: 100%; border-collapse: collapse; }
+        th { text-align: left; color: #7e8ba0; font-size: 12px; text-transform: uppercase; padding: 13px; border-bottom: 1px solid rgba(0, 200, 255, .15); }
+        td { padding: 14px 13px; border-bottom: 1px solid rgba(255, 255, 255, .05); font-size: 14px; }
+        tr:hover td { background: rgba(0, 200, 255, .04); }
     </style>
 </head>
 <body>
 <div class="container">
-    <h1>🤖 Статистика Бота</h1>
-    
-    <div class="stats">
-        <div class="card">
-            <h3>Общий профит (у.е.)</h3>
-            <div class="val {{ 'profit-pos' if total_profit >= 0 else 'profit-neg' }}">{{ "%.2f"|format(total_profit) }}</div>
-        </div>
-        <div class="card">
-            <h3>ROI</h3>
-            <div class="val {{ 'profit-pos' if roi >= 0 else 'profit-neg' }}">{{ "%.1f"|format(roi) }}%</div>
-        </div>
-        <div class="card">
-            <h3>Зашло / Не зашло</h3>
-            <div class="val"><span class="win">{{ wins }}</span> / <span class="lose">{{ loses }}</span></div>
-        </div>
-        <div class="card">
-            <h3>В ожидании</h3>
-            <div class="val pending">{{ pendings }}</div>
-        </div>
+    <div class="header"><div class="logo">🤖 ПРЕМАТЧ-БОТ</div></div>
+    <div class="grid">
+        <div class="card"><h3>Профит</h3><div class="val {{ 'green' if total_profit >= 0 else 'red' }}">{{ "%+.2f"|format(total_profit) }}</div></div>
+        <div class="card"><h3>ROI</h3><div class="val {{ 'green' if roi >= 0 else 'red' }}">{{ "%.1f"|format(roi) }}%</div></div>
+        <div class="card"><h3>Зашло / Не зашло</h3><div class="val"><span class="green">{{ wins }}</span> / <span class="red">{{ loses }}</span></div></div>
+        <div class="card"><h3>В ожидании</h3><div class="val orange">{{ pendings }}</div></div>
     </div>
-
-    <div class="chart-container">
-        <canvas id="profitChart"></canvas>
+    <div class="section">
+        <div class="section-title">📈 График профита</div>
+        <div class="chart-container"><canvas id="profitChart"></canvas></div>
     </div>
-
-    <table>
-        <thead>
-            <tr>
-                <th>Дата</th>
-                <th>Матч</th>
-                <th>Лига</th>
-                <th>Кэф</th>
-                <th>Оценка</th>
-                <th>Статус</th>
-                <th>Профит</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for s in signals %}
-            <tr>
-                <td>{{ s.sent_at | timestamp_to_date }}</td>
-                <td>{{ s.match_name }}</td>
-                <td>{{ s.league }}</td>
-                <td>{{ "%.2f"|format(s.odds) }}</td>
-                <td>{{ s.score }}/10</td>
-                <td>
-                    {% if s.status == 'WIN' %}
-                        <span class="badge badge-win">WIN</span>
-                    {% elif s.status == 'LOSE' %}
-                        <span class="badge badge-lose">LOSE</span>
-                    {% else %}
-                        <span class="badge badge-pending">PENDING</span>
-                    {% endif %}
-                </td>
-                <td class="{{ 'profit-pos' if s.profit > 0 else 'profit-neg' if s.profit < 0 else '' }}">
-                    {{ "%+.2f"|format(s.profit) }}
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+    <div class="section">
+        <div class="section-title">📜 Все сигналы</div>
+        <table>
+            <thead><tr><th>Дата</th><th>Матч</th><th>Лига</th><th>Кэф</th><th>Оценка</th><th>Статус</th><th>Профит</th></tr></thead>
+            <tbody>
+                {% for s in signals %}
+                <tr>
+                    <td>{{ s.sent_at | timestamp_to_date }}</td>
+                    <td><strong>{{ s.match_name }}</strong></td>
+                    <td>{{ s.league }}</td>
+                    <td>{{ "%.2f"|format(s.odds) }}</td>
+                    <td>{{ s.score }}/10</td>
+                    <td class="{{ 'green' if s.status=='WIN' else 'red' if s.status=='LOSE' else 'orange' }}">{{ s.status }}</td>
+                    <td class="{{ 'green' if s.profit>0 else 'red' if s.profit<0 else '' }}">{{ "%+.2f"|format(s.profit) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
 </div>
-
 <script>
-    const labels = {{ chart_labels | safe }};
-    const data = {{ chart_data | safe }};
-
-    const ctx = document.getElementById('profitChart').getContext('2d');
-    new Chart(ctx, {
+    new Chart(document.getElementById('profitChart').getContext('2d'), {
         type: 'line',
-        data: {
-            labels: labels,
-            datasets: [{
-                label: 'Общий профит',
-                data: data,
-                borderColor: '#38bdf8',
-                backgroundColor: 'rgba(56, 189, 248, 0.1)',
-                borderWidth: 3,
-                pointBackgroundColor: '#0f172a',
-                pointBorderColor: '#38bdf8',
-                pointBorderWidth: 2,
-                pointRadius: 4,
-                fill: true,
-                tension: 0.3
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: { legend: { display: false } },
-            scales: {
-                y: { grid: { color: '#334155' }, ticks: { color: '#94a3b8' } },
-                x: { grid: { display: false }, ticks: { color: '#94a3b8' } }
-            }
-        }
+        data: { labels: {{ chart_labels | safe }}, datasets: [{ label: 'Профит', data: {{ chart_data | safe }}, borderColor: '#00ffe0', backgroundColor: 'rgba(0, 255, 224, 0.1)', borderWidth: 3, fill: true, tension: 0.3 }] },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { grid: { color: '#1e293b' }, ticks: { color: '#64748b' } }, x: { grid: { display: false }, ticks: { color: '#64748b' } } } }
     });
 </script>
 </body>
@@ -146,14 +85,13 @@ def timestamp_to_date(ts):
     if not ts: return "-"
     return datetime.fromtimestamp(ts).strftime('%d.%m %H:%M')
 
+# 🔥 ГЛАВНАЯ СТРАНИЦА
 @app.route('/')
 def index():
     signals = db.get_all_signals()
-    
     wins = sum(1 for s in signals if s['status'] == 'WIN')
     loses = sum(1 for s in signals if s['status'] == 'LOSE')
     pendings = sum(1 for s in signals if s['status'] == 'PENDING')
-    
     total_profit = sum(s['profit'] for s in signals)
     total_bets = wins + loses
     roi = (total_profit / total_bets * 100) if total_bets > 0 else 0.0
@@ -172,18 +110,15 @@ def index():
         chart_labels.append(day)
         chart_data.append(round(cumulative, 2))
 
-    return render_template_string(
-        HTML_TEMPLATE,
-        signals=signals,
-        wins=wins,
-        loses=loses,
-        pendings=pendings,
-        total_profit=total_profit,
-        roi=roi,
-        chart_labels=str(chart_labels).replace("'", '"'),
-        chart_data=chart_data
-    )
+    return render_template_string(HTML_TEMPLATE, signals=signals, wins=wins, loses=loses, pendings=pendings, total_profit=total_profit, roi=roi, chart_labels=str(chart_labels).replace("'", '"'), chart_data=chart_data)
+
+# 🔥 HEALTHCHECK ДЛЯ BOTHOST (чтобы не было 404 при проверке)
+@app.route('/health')
+@app.route('/healthcheck')
+def health():
+    return "OK", 200
 
 if __name__ == '__main__':
     db.init_db()
+    # Порт 3000, как требует Bothost!
     app.run(host='0.0.0.0', port=3000)
