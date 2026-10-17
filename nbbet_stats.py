@@ -289,9 +289,8 @@ def _search_by_query(query, other_query):
     q1 = query.lower()
     q2 = other_query.lower()
 
-    # 🔥 СТРОГИЙ ПОИСК: обе команды должны совпасть
+    # 🔥 МЯГКИЙ ПОИСК: ищем, где обе команды встречаются в названии
     for item in results:
-        # type: 6 = матч, 5 = команда (пропускаем)
         if item.get("type") != 6:
             continue
 
@@ -302,14 +301,22 @@ def _search_by_query(query, other_query):
         n1 = title[0].lower()
         n2 = title[1].lower()
 
-        # Проверяем совпадение по первым 3 символам
-        match1 = q1[:3] in n1 or n1[:3] in q1
-        match2 = q2[:3] in n2 or n2[:3] in q2
+        # Проверяем, что первая команда есть в n1 или n2
+        # И вторая команда есть в n1 или n2
+        # (иногда nb-bet меняет хозяев и гостей местами)
+        
+        # Сценарий 1: query1 = хозяева, query2 = гости
+        match1 = (q1[:3] in n1 or n1[:3] in q1)
+        match2 = (q2[:3] in n2 or n2[:3] in q2)
+        
+        # Сценарий 2: query1 = гости, query2 = хозяева
+        match1_rev = (q1[:3] in n2 or n2[:3] in q1)
+        match2_rev = (q2[:3] in n1 or n1[:3] in q2)
 
-        if match1 and match2:
+        if (match1 and match2) or (match1_rev and match2_rev):
             return item.get("link")
 
-    # Не нашли пару — возвращаем None
+    # Если не нашли точную пару — возвращаем None
     return None
 
 
