@@ -1,119 +1,178 @@
-# =====================================================================
-# DATABASE (SQLite)
-# =====================================================================
-import sqlite3
-import json
+from flask import Flask, render_template_string
+import database as db
 from datetime import datetime
+from collections import defaultdict
 
-DB_PATH = "prematch.db"
+app = Flask(__name__)
 
+# Красивый HTML-шаблон прямо внутри кода
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Статистика Бота</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; background: #121212; color: #fff; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: auto; }
+        .stats { display: flex; gap: 20px; margin-bottom: 30px; }
+        .card { background: #1e1e1e; padding: 20px; border-radius: 8px; flex: 1; text-align: center; border: 1px solid #333; }
+        .card h3 { margin: 0 0 10px 0; color: #888; font-size: 14px; text-transform: uppercase; }
+        .card .val { font-size: 28px; font-weight: bold; }
+        .win { color: #4caf50; }
+        .lose { color: #f44336; }
+        .pending { color: #ffeb3b; }
+        .profit-pos { color: #4caf50; }
+        .profit-neg { color: #f44336; }
+        table { width: 100%; border-collapse: collapse; background: #1e1e1e; border-radius: 8px; overflow: hidden; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #333; }
+        th { background: #2a2a2a; font-weight: bold; color: #aaa; }
+        tr:hover { background: #2a2a2a; }
+        .chart-container { background: #1e1e1e; padding: 20px; border-radius: 8px; margin-bottom: 30px; border: 1px solid #333; height: 300px; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>🤖 Статистика ПРЕМАТЧ-Бота</h1>
+    
+    <div class="stats">
+        <div class="card">
+            <h3>Профит (у.е.)</h3>
+            <div class="val {{ 'profit-pos' if total_profit >= 0 else 'profit-neg' }}">{{ "%.2f"|format(total_profit) }}</div>
+        </div>
+        <div class="card">
+            <h3>ROI</h3>
+            <div class="val {{ 'profit-pos' if roi >= 0 else 'profit-neg' }}">{{ "%.1f"|format(roi) }}%</div>
+        </div>
+        <div class="card">
+            <h3>Сигналов (WIN/LOSE)</h3>
+            <div class="val"><span class="win">{{ wins }}</span> / <span class="lose">{{ loses }}</span></div>
+        </div>
+        <div class="card">
+            <h3>В ожидании</h3>
+            <div class="val pending">{{ pendings }}</div>
+        </div>
+    </div>
 
-def init_db():
-    """Создаёт таблицы, если их нет."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    <div class="chart-container">
+        <canvas id="profitChart"></canvas>
+    </div>
 
-    # Сигналы
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS signals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            game_id TEXT,
-            league TEXT,
-            team1 TEXT,
-            team2 TEXT,
-            match TEXT,
-            start_ts INTEGER,
-            score INTEGER,
-            odd_tb25 REAL,
-            home_stats TEXT,
-            away_stats TEXT,
-            reasons TEXT,
-            result TEXT,
-            result_score TEXT,
-            created_at INTEGER,
-            checked_at INTEGER
-        )
-    """)
+    <table>
+        <thead>
+            <tr>
+                <th>Дата</th>
+                <th>Матч</th>
+                <th>Лига</th>
+                <th>Кэф</th>
+                <th>Счет (score)</th>
+                <th>Статус</th>
+                <th>Профит</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in signals %}
+            <tr>
+                <td>{{ s.sent_at | timestamp_to_date }}</td>
+                <td>{{ s.match_name }}</td>
+                <td>{{ s.league }}</td>
+                <td>{{ "%.2f"|format(s.odds) }}</td>
+                <td>{{ s.score }}/10</td>
+                <td class="{{ 'win' if s.status=='WIN' else 'lose' if s.status=='LOSE' else 'pending' }}">
+                    {{ s.status }}
+                </td>
+                <td class="{{ 'profit-pos' if s.profit > 0 else 'profit-neg' if s.profit < 0 else '' }}">
+                    {{ "%+.2f"|format(s.profit) }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
 
-    # Статистика команд (кэш)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS team_stats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            league TEXT,
-            team TEXT,
-            data TEXT,
-            updated_at INTEGER
-        )
-    """)
+<script>
+    // Данные для графика из Python
+    const labels = {{ chart_labels | safe }};
+    const data = {{ chart_data | safe }};
 
-    conn.commit()
-    conn.close()
+    const ctx = document.getElementById('profitChart').getContext('2d');
+    new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: 'Общий профит по дням',
+                data: data,
+                borderColor: '#4caf50',
+                backgroundColor: 'rgba(76, 175, 80, 0.1)',
+                borderWidth: 2,
+                fill: true,
+                tension: 0.3
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                y: { grid: { color: '#333' }, ticks: { color: '#888' } },
+                x: { grid: { display: false }, ticks: { color: '#888' } }
+            }
+        }
+    });
+</script>
+</body>
+</html>
+"""
 
+@app.template_filter('timestamp_to_date')
+def timestamp_to_date(ts):
+    if not ts: return "-"
+    return datetime.fromtimestamp(ts).strftime('%d.%m %H:%M')
 
-def save_signal(signal):
-    """Сохраняет сигнал в БД."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-        INSERT INTO signals (
-            game_id, league, team1, team2, match, start_ts,
-            score, odd_tb25, home_stats, away_stats, reasons,
-            result, result_score, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        signal.get("game_id"),
-        signal.get("league"),
-        signal.get("team1"),
-        signal.get("team2"),
-        signal.get("match"),
-        signal.get("start_ts"),
-        signal.get("score"),
-        signal.get("odd_tb25"),
-        json.dumps(signal.get("home_stats"), ensure_ascii=False),
-        json.dumps(signal.get("away_stats"), ensure_ascii=False),
-        json.dumps(signal.get("reasons"), ensure_ascii=False),
-        None,  # result
-        None,  # result_score
-        int(datetime.now().timestamp()),
-    ))
-    conn.commit()
-    signal_id = c.lastrowid
-    conn.close()
-    return signal_id
+@app.route('/')
+def index():
+    signals = db.get_all_signals()
+    
+    # Считаем статистику
+    wins = sum(1 for s in signals if s['status'] == 'WIN')
+    loses = sum(1 for s in signals if s['status'] == 'LOSE')
+    pendings = sum(1 for s in signals if s['status'] == 'PENDING')
+    
+    total_profit = sum(s['profit'] for s in signals)
+    total_bets = wins + loses
+    roi = (total_profit / total_bets * 100) if total_bets > 0 else 0.0
 
+    # Готовим данные для графика (по дням)
+    daily_profit = defaultdict(float)
+    for s in signals:
+        if s['status'] in ['WIN', 'LOSE']:
+            day = datetime.fromtimestamp(s['sent_at']).strftime('%d.%m')
+            daily_profit[day] += s['profit']
+    
+    # Считаем накопительный итог
+    chart_labels = []
+    chart_data = []
+    cumulative = 0
+    for day in sorted(daily_profit.keys(), key=lambda d: datetime.strptime(d, '%d.%m')):
+        cumulative += daily_profit[day]
+        chart_labels.append(day)
+        chart_data.append(round(cumulative, 2))
 
-def get_pending_signals():
-    """Возвращает сигналы без результата."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT * FROM signals WHERE result IS NULL ORDER BY created_at DESC")
-    rows = c.fetchall()
-    conn.close()
-    return rows
+    return render_template_string(
+        HTML_TEMPLATE,
+        signals=signals,
+        wins=wins,
+        loses=loses,
+        pendings=pendings,
+        total_profit=total_profit,
+        roi=roi,
+        chart_labels=str(chart_labels).replace("'", '"'),
+        chart_data=chart_data
+    )
 
-
-def update_result(signal_id, result, result_score):
-    """Обновляет результат сигнала."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-        UPDATE signals
-        SET result = ?, result_score = ?, checked_at = ?
-        WHERE id = ?
-    """, (result, result_score, int(datetime.now().timestamp()), signal_id))
-    conn.commit()
-    conn.close()
-
-
-def get_stats():
-    """Возвращает общую статистику."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM signals")
-    total = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM signals WHERE result = 'win'")
-    wins = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM signals WHERE result = 'lose'")
-    loses = c.fetchone()[0]
-    conn.close()
-    return {"total": total, "wins": wins, "loses": loses}
+if __name__ == '__main__':
+    db.init_db()
+    # Слушаем порт 8080
+    app.run(host='0.0.0.0', port=8080)
