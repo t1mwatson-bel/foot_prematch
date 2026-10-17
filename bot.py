@@ -113,7 +113,7 @@ def main_loop():
 
     init_db()
 
-    # Кэш: ключ матча → уже проверяли
+    # Кэш: ключ матча → уже проверяли (только успешные проверки!)
     nbbet_cache = {}
 
     while True:
@@ -149,13 +149,14 @@ def main_loop():
                     continue
 
                 cache_key = f"{m['team1']}_{m['team2']}_{m['start_ts']}"
+                
+                # 🔥 ВАЖНО: пропускаем только если УЖЕ УСПЕШНО проверили и отправили
                 if cache_key in nbbet_cache:
                     continue
 
                 print(f"   🔍 {m['match']}...", end=" ", flush=True)
 
                 result = check_match(m)
-                nbbet_cache[cache_key] = True
 
                 if not result:
                     print(f"❌ нет данных", flush=True)
@@ -182,13 +183,20 @@ def main_loop():
                             "away_stats": result["away_stats"],
                         })
                         print(f"      📤 СИГНАЛ ОТПРАВЛЕН ({score}/10)", flush=True)
+                        
+                        # 🔥 Записываем в кэш ТОЛЬКО после успешной отправки
+                        nbbet_cache[cache_key] = True
                         time.sleep(2)
                 else:
                     # Логируем причины, но НЕ отправляем
                     for r in reasons:
                         print(f"      {r}", flush=True)
+                        
+                    # 🔥 Если score < MIN_SCORE, записываем в кэш, 
+                    # чтобы не спамить логами каждый час (но матч уже не изменится)
+                    nbbet_cache[cache_key] = True
 
-                # Пауза между матчами, чтобы не упереться в лимиты хостинга
+                # Пауза между матчами
                 time.sleep(1)
 
             # Чистим кэш
