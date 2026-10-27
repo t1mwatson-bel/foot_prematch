@@ -69,22 +69,14 @@ def is_placeholder(name):
 
 # --- ЗАМЕНИ СТАРУЮ ФУНКЦИЮ НА ЭТУ ---
 def fetch_via_proxy(url):
-    proxy_url = f"http://api.scraperapi.com?api_key={SCRAPER_API_KEY}&url={urllib.parse.quote(url)}"
     try:
-        r = requests.get(proxy_url, headers=HEADERS, timeout=30)
-        
-        # --- СТРОКИ ДЛЯ ОТЛАДКИ ---
-        print(f"DEBUG: Запрос к: {url}")
-        print(f"DEBUG: Статус ответа: {r.status_code}")
-        print(f"DEBUG: Ответ API: {r.text[:200]}") 
-        # --------------------------
-        
+        # Пробуем напрямую, без ScraperAPI
+        r = requests.get(url, headers=HEADERS, timeout=30)
+        print(f"DEBUG (Direct): Статус {r.status_code}")
         if r.status_code == 200:
             return r.json()
-        else:
-            print(f"ОШИБКА API: Статус {r.status_code}")
     except Exception as e:
-        print(f"ОШИБКА СЕТИ ИЛИ ПРОКСИ: {e}")
+        print(f"ОШИБКА ПРЯМОГО ЗАПРОСА: {e}")
     return None
 
 def find_match_slug(team1, team2):
