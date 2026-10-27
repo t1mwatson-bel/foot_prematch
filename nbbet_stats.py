@@ -87,11 +87,15 @@ def find_match_slug(team1, team2):
     # Отправляем запрос в поиск nb-bet через прокси
     url = f"{NB_API}/v1/soccer/search/?query={q1}"
     data = fetch_via_proxy(url)
-        if data:
+    
+    # --- ИСПРАВЛЕННЫЙ БЛОК ---
+    if data:
         with open("nbbet_debug.json", "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
         print("NB-Bet: ответ сохранён в nbbet_debug.json", flush=True)
+    # -------------------------
+
     if not data: 
         return None
 
