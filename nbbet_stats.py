@@ -84,34 +84,37 @@ def find_match_slug(team1, team2):
     q1 = get_team_query(team1)
     q2 = get_team_query(team2)
 
-    # Отправляем запрос в поиск nb-bet через прокси
+    # Ищем по первой команде
     url = f"{NB_API}/v1/soccer/search/?query={q1}"
     data = fetch_via_proxy(url)
     
-    # --- ИСПРАВЛЕННЫЙ БЛОК ---
     if data:
         with open("nbbet_debug.json", "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-
-        print("NB-Bet: ответ сохранён в nbbet_debug.json", flush=True)
-    # -------------------------
 
     if not data: 
         return None
 
     results = data.get("data", [])
+    
     for item in results:
         title = item.get("title", [])
         if len(title) < 2: 
             continue
         
-        n1, n2 = title[0].lower(), title[1].lower()
+        n1 = title[0].lower().strip()
+        n2 = title[1].lower().strip()
         
-        # Мягкий поиск совпадений (первые 3-4 буквы)
-        match1 = (q1[:4] in n1 or n1[:4] in q1)
-        match2 = (q2[:4] in n2 or n2[:4] in q2)
+        # Используем более длинное совпадение (первые 5 букв), чтобы не путать команды
+        # И проверяем оба варианта: (Венеция-Интер) и (Интер-Венеция)
         
-        if match1 and match2:
+        # Вариант 1: team1 = n1, team2 = n2
+        match_direct = (q1[:5] in n1 and q2[:5] in n2)
+        
+        # Вариант 2: team1 = n2, team2 = n1 (если API перепутал хозяев/гостей)
+        match_reverse = (q1[:5] in n2 and q2[:5] in n1)
+        
+        if match_direct or match_reverse:
             return item.get("link")
             
     return None
