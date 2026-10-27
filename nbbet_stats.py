@@ -68,15 +68,21 @@ def is_placeholder(name):
     return "хозяева" in n or "гости" in n or n.strip() in ["", "?", "tbd"]
 
 # --- ЗАМЕНИ СТАРУЮ ФУНКЦИЮ НА ЭТУ ---
-def fetch_via_proxy(url):
+def fetch_via_proxy(url):  # Можешь переименовать в fetch_data, но пока оставим так
     try:
-        # Пробуем напрямую, без ScraperAPI
+        # Делаем прямой запрос к NB-Bet без прокси
         r = requests.get(url, headers=HEADERS, timeout=30)
-        print(f"DEBUG (Direct): Статус {r.status_code}")
+        
+        # Оставляем отладку, чтобы видеть статус
+        print(f"DEBUG: Запрос к: {url}")
+        print(f"DEBUG: Статус ответа: {r.status_code}")
+        
         if r.status_code == 200:
             return r.json()
+        else:
+            print(f"ОШИБКА API: Статус {r.status_code} - {r.text[:100]}")
     except Exception as e:
-        print(f"ОШИБКА ПРЯМОГО ЗАПРОСА: {e}")
+        print(f"ОШИБКА СЕТИ: {e}")
     return None
 
 def find_match_slug(team1, team2):
