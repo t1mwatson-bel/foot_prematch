@@ -17,6 +17,7 @@ from stats_parser import (
     strategy_shots,
     strategy_corners,
     strategy_attacks,
+    strategy_early_goal,
     strategy_combo,
 )
 from live_logic import (
