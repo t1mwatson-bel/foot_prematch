@@ -139,3 +139,22 @@ def strategy_combo(p):
     side = "home" if p["xg1"] > p["xg2"] else "away"
     if (p["red1"] if side == "home" else p["red2"]) > 0: return None
     return {"strategy": "Комбо xG+углы", "emoji": "💡", "dominant": p["team1"] if side == "home" else p["team2"], "key": f"xG {xg_diff:.2f}, углы {c_diff}", "min_odd": S6_MIN_ODD}
+
+def strategy_early_goal(p):
+    # Ловим моменты, когда за последние 5-10 минут пошел резкий всплеск атак
+    trend = p.get("trend", {})
+    if not trend.get("available"):
+        return None
+        
+    # Если за последние 5-10 минут ударов стало больше на 4, а xG вырос на 0.4
+    if trend.get("shots_delta", 0) >= 4 and trend.get("xg_delta", 0) >= 0.4:
+        # И при этом счет пока 0-0 (только начинается игра)
+        if p["s1"] + p["s2"] == 0:
+            return {
+                "strategy": "Ранний гол (Momentum)", 
+                "emoji": "⚡", 
+                "dominant": "обе команды", 
+                "key": f"всплеск ударов +{trend['shots_delta']}, xG +{trend['xg_delta']:.2f}", 
+                "min_odd": 1.4
+            }
+    return None
