@@ -19,6 +19,7 @@ from stats_parser import (
     strategy_attacks,
     strategy_early_goal,
     strategy_combo,
+    strategy_fixed_total,
 )
 from live_logic import (
     check_pending_results,
