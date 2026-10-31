@@ -161,3 +161,54 @@ def strategy_early_goal(p):
                 "min_odd": 1.4
             }
     return None
+
+def get_fixed_total_odd(game, target):
+    """
+    Ищет коэффициент на фиксированный тотал (например, ТБ 1.5).
+    В API 1xLite тоталы обычно лежат в блоке groupId=17.
+    """
+    # Приводим к строке, чтобы искать точное совпадение (например, "1.5")
+    target_str = str(target)
+    
+    for grp in (game.get("centralBlockEventGroups") or []):
+        if not isinstance(grp, dict) or grp.get("groupId") != 17:
+            continue
+        for event_list in (grp.get("events") or []):
+            if not isinstance(event_list, list):
+                continue
+            for item in event_list:
+                if not isinstance(item, dict):
+                    continue
+                # Ищем тотал, где параметр совпадает с нашим
+                try:
+                    parameter = float(item.get("parameter"))
+                except:
+                    continue
+                
+                if abs(parameter - target) < 0.001:
+                    # Ищем коэффициент (тип 9 — это обычно тотал больше)
+                    if item.get("type") == 9:
+                        odd = item.get("cf")
+                        if odd and float(odd) > 1.0:
+                            return float(odd)
+    return None
+
+def strategy_fixed_total(p):
+    """
+    Стратегия на фиксированный тотал (например, ТБ 1.5).
+    Работает, если счет 0:0, но xG уже высокий.
+    """
+    total_goals = p["s1"] + p["s2"]
+    total_xg = p["xg1"] + p["xg2"]
+    
+    # Если счет 0:0, но xG уже больше 1.5 (команды создали моменты, но не забили)
+    if total_goals == 0 and total_xg >= 1.5:
+        return {
+            "strategy": "ТБ 1.5 (Голы назревают)",
+            "emoji": "📈",
+            "dominant": "обе команды",
+            "key": f"xG {total_xg:.2f} при счете 0-0",
+            "min_odd": 1.3,  # Коэффициент на ТБ 1.5 обычно ниже, чем на следующий гол
+            "target_total": 1.5  # Указываем, на какой тотал ставим
+        }
+    return None
