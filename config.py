@@ -69,3 +69,6 @@ HEADERS = {
 }
 
 RUSCORE_HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "*/*", "Origin": "https://ruscore.ru", "Referer": "https://ruscore.ru/"}
+# Настройки для Индивидуального Тотала (ИТ)
+S7_IND_TOTAL_MIN_ODD = 1.55  # Минимальный кэф на ИТ (например, ИТ Хозяев ТБ 0.5)
+S7_IND_TOTAL_MAX_MINUTE = 75 # Не берем ИТ после 75-й минуты
