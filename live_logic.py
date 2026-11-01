@@ -137,6 +137,53 @@ def fetch_1xlite_game_by_id(game_id):
         print(f"⚠️ Ошибка GetGameZip для ID={game_id}: {e}", flush=True)
         return None
 
+# ============================================================
+# ПОЛУЧЕНИЕ КОЭФФИЦИЕНТОВ
+# ============================================================
+
+def get_odd_individual_total(game, side="home"):
+    """
+    Ищет коэффициент на Индивидуальный Тотал команды (например, ИТ Хозяев ТБ 0.5).
+    side="home" - хозяева, side="away" - гости.
+    """
+    target = 0.5 
+    
+    for grp in (game.get("centralBlockEventGroups") or []):
+        if not isinstance(grp, dict) or grp.get("groupId") != 17:
+            continue
+            
+        for event_list in (grp.get("events") or []):
+            if not isinstance(event_list, list):
+                continue
+                
+            for item in event_list:
+                if not isinstance(item, dict):
+                    continue
+                
+                # В API 1xLite обычно type=9 (общий тотал), type=10 (ИТ Хозяев), type=11 (ИТ Гостей)
+                item_type = item.get("T", item.get("type"))
+                parameter = item.get("P", item.get("parameter"))
+                odd = item.get("C", item.get("cf"))
+                
+                try:
+                    parameter = float(parameter)
+                    odd = float(odd)
+                    item_type = int(item_type) if item_type else 0
+                except (TypeError, ValueError):
+                    continue
+                
+                if abs(parameter - target) < 0.001 and odd > 1.0:
+                    if side == "home" and item_type == 10:
+                        return odd
+                    if side == "away" and item_type == 11:
+                        return odd
+                        
+    return None
+
+
+# ============================================================
+# ПОИСК МАТЧА И РАЗБОР СЧЁТА
+# ============================================================
 
 def find_1xlite_game(games, game_id):
     """Ищет матч по точному ID."""
@@ -490,7 +537,7 @@ def restore_pending_checks():
             "odd": row.get("odds"),
             "check_after": min(check_after, now),
             "attempts": attempts,
-            "market_type": row.get("market_type"),  # <-- Восстанавливаем тип рынка
+            "market_type": row.get("market_type"),  # Восстанавливаем тип рынка
         }
 
         restored[key] = info
@@ -520,9 +567,6 @@ def restore_pending_checks():
 
 def persist_check(game_id, info):
     try:
-        # ВАЖНО: Если в базе нет колонки market_type, 
-        # этот код выдаст ошибку. Добавь колонку в БД (в database.py),
-        # или закомментируй строку с market_type ниже.
         return db.update_live_signal_check(
             str(game_id),
             {
@@ -536,7 +580,7 @@ def persist_check(game_id, info):
                 "base_text": info.get("base_text"),
                 "check_after": info.get("check_after"),
                 "attempts": info.get("attempts", 0),
-                "market_type": info.get("market_type"), # <-- Сохраняем в БД
+                "market_type": info.get("market_type"),
             },
         )
     except Exception as e:
@@ -671,8 +715,6 @@ def _edit_completed_signal(game_id, row, result_text=None):
     except (TypeError, ValueError):
         attempts = 0
 
-    # Увеличиваем интервал при многократных ошибках, чтобы
-    # не отправлять запросы в Telegram слишком часто.
     retry_delay = min(60 * (2 ** min(attempts, 4)), 900)
 
     try:
@@ -697,8 +739,7 @@ def _edit_completed_signal(game_id, row, result_text=None):
 
 def retry_pending_telegram_updates():
     """
-    Повторно редактирует сообщения завершённых сигналов,
-    если предыдущая попытка Telegram не удалась.
+    Повторно редактирует сообщения завершённых сигналов.
     Вызывать из основного цикла main.py.
     """
     try:
@@ -834,8 +875,6 @@ def _finish_signal(key, info, won, score1, score2, now):
             flush=True,
         )
 
-    # Формируем и сохраняем готовый текст до попытки редактирования.
-    # Если Telegram недоступен, текст останется в БД для повтора.
     result_text = format_with_result(
         info.get("base_text") or "",
         result_line,
@@ -931,15 +970,10 @@ def _check_market_win(market_type, score1, score2, old_s1, old_s2):
         return False
 
     if market_type == "individual_home":
-        # Для ИТ Хозяев ждем гол именно от хозяев
         return s1 > o1
-        
     elif market_type == "individual_away":
-        # Для ИТ Гостей ждем гол именно от гостей
         return s2 > o2
-        
     else:
-        # Старая логика (следующий гол от любой команды)
         return s1 > o1 or s2 > o2
 
 
@@ -1014,7 +1048,7 @@ def check_pending_results(pending_checks):
             continue
 
         match_name = info.get("match") or key
-        market_type = info.get("market_type") # <-- Берем тип рынка
+        market_type = info.get("market_type")
 
         try:
             old_s1 = int(info["old_s1"])
@@ -1034,7 +1068,6 @@ def check_pending_results(pending_checks):
         # ----------------------------------------------------
         # 1. LIVE-ЛЕНТА 1XLITE
         # ----------------------------------------------------
-
         if live_game is not None:
             score1, score2 = parse_1xlite_score(live_game)
             finished = is_1xlite_finished(live_game)
@@ -1046,29 +1079,19 @@ def check_pending_results(pending_checks):
                 flush=True,
             )
 
-            # Используем новую умную проверку
             if _check_market_win(market_type, score1, score2, old_s1, old_s2):
-                if _finish_signal(
-                    key, info, True, score1, score2, now
-                ):
+                if _finish_signal(key, info, True, score1, score2, now):
                     pending_checks.pop(key, None)
                 continue
 
-            if (
-                score1 is not None
-                and score2 is not None
-                and finished
-            ):
-                if _finish_signal(
-                    key, info, False, score1, score2, now
-                ):
+            if score1 is not None and score2 is not None and finished:
+                if _finish_signal(key, info, False, score1, score2, now):
                     pending_checks.pop(key, None)
                 continue
 
         # ----------------------------------------------------
         # 2. ОТДЕЛЬНЫЙ ЗАПРОС МАТЧА ПО ID
         # ----------------------------------------------------
-
         if (
             live_game is None
             or score1 is None
@@ -1084,151 +1107,7 @@ def check_pending_results(pending_checks):
             detailed_game = fetch_1xlite_game_by_id(key)
 
             if detailed_game is not None:
-                detail_s1, detail_s2 = parse_1xlite_score(
-                    detailed_game
-                )
-                detail_finished = is_1xlite_finished(
-                    detailed_game
-                )
+                detail_s1, detail_s2 = parse_1xlite_score(detailed_game)
+                detail_finished = is_1xlite_finished(detailed_game)
 
-                sc = detailed_game.get("SC") or {}
-                raw_status = (
-                    sc.get("I")
-                    if isinstance(sc, dict)
-                    else None
-                )
-
-                print(
-                    f"📡 1xLite GetGameZip: {match_name} | "
-                    f"счёт={detail_s1}-{detail_s2} | "
-                    f"завершён={detail_finished} | "
-                    f"SC.I={raw_status!r}",
-                    flush=True,
-                )
-
-                if detail_s1 is not None and detail_s2 is not None:
-                    score1, score2 = detail_s1, detail_s2
-                    finished = detail_finished
-
-                    # Используем новую умную проверку
-                    if _check_market_win(market_type, score1, score2, old_s1, old_s2):
-                        if _finish_signal(
-                            key, info, True, score1, score2, now
-                        ):
-                            pending_checks.pop(key, None)
-                        continue
-
-                    if finished:
-                        if _finish_signal(
-                            key, info, False, score1, score2, now
-                        ):
-                            pending_checks.pop(key, None)
-                        continue
-
-        # ----------------------------------------------------
-        # 3. RUSCORE — РЕЗЕРВНЫЙ ИСТОЧНИК
-        # ----------------------------------------------------
-
-        team1 = str(info.get("team1") or "").strip()
-        team2 = str(info.get("team2") or "").strip()
-
-        if team1 and team2:
-            event = None
-
-            for date_str in _get_dates_to_check(info, now):
-                try:
-                    events = fetch_ruscore_events(date_str)
-                except Exception as e:
-                    print(
-                        f"⚠️ Ruscore: ошибка загрузки событий "
-                        f"на {date_str}: {e}",
-                        flush=True,
-                    )
-                    continue
-
-                if not events:
-                    continue
-
-                event = find_match(events, team1, team2)
-
-                if event:
-                    info["date_str"] = date_str
-                    break
-
-            if event is None:
-                print(
-                    f"🔁 {match_name}: матч не найден в Ruscore; "
-                    "повторим позже",
-                    flush=True,
-                )
-                _schedule_retry(key, info, now)
-                continue
-
-            ruscore_status = get_ruscore_status(event)
-            print(
-                f"📡 Ruscore: {match_name} | "
-                f"статус={ruscore_status!r}",
-                flush=True,
-            )
-
-            try:
-                r_s1, r_s2 = parse_score_for_match(event)
-            except Exception as e:
-                print(
-                    f"⚠️ Ruscore: не удалось разобрать счёт "
-                    f"для {match_name}: {e}",
-                    flush=True,
-                )
-                r_s1, r_s2 = None, None
-
-            if r_s1 is not None and r_s2 is not None:
-                score1, score2 = r_s1, r_s2
-
-                print(
-                    f"📡 Ruscore: счёт={score1}-{score2}",
-                    flush=True,
-                )
-
-                # Умная проверка по типу рынка
-                if _check_market_win(
-                    market_type, score1, score2, old_s1, old_s2
-                ):
-                    if _finish_signal(
-                        key, info, True, score1, score2, now
-                    ):
-                        pending_checks.pop(key, None)
-                    continue
-
-                # Если счёт не изменился, но матч завершён — фиксируем «не зашло»
-                if is_finished_status(ruscore_status):
-                    if _finish_signal(
-                        key, info, False, score1, score2, now
-                    ):
-                        pending_checks.pop(key, None)
-                    continue
-
-                # Данных достаточно, но результата пока нет — повторим позже
-                _schedule_retry(key, info, now)
-                continue
-
-            else:
-                print(
-                    f"⚠️ Ruscore: счёт не распознан для {match_name}",
-                    flush=True,
-                )
-
-                # Если статус явно говорит «завершён», но счёта нет —
-                # не можем корректно закрыть сигнал, повторим позже
-                _schedule_retry(key, info, now)
-                continue
-
-        # ----------------------------------------------------
-        # 4. НЕДОСТАТОЧНО ДАННЫХ
-        # ----------------------------------------------------
-
-        print(
-            f"⚠️ {match_name}: недостаточно данных для проверки "
-            "(нет 1xLite и Ruscore); повторим позже",
-            flush=True,
-        )
-        _schedule_retry(key, info, now)
+                sc = detailed_game.get("SC
