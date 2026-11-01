@@ -1134,3 +1134,101 @@ def check_pending_results(pending_checks):
 
         if team1 and team2:
             event = None
+
+            for date_str in _get_dates_to_check(info, now):
+                try:
+                    events = fetch_ruscore_events(date_str)
+                except Exception as e:
+                    print(
+                        f"⚠️ Ruscore: ошибка загрузки событий "
+                        f"на {date_str}: {e}",
+                        flush=True,
+                    )
+                    continue
+
+                if not events:
+                    continue
+
+                event = find_match(events, team1, team2)
+
+                if event:
+                    info["date_str"] = date_str
+                    break
+
+            if event is None:
+                print(
+                    f"🔁 {match_name}: матч не найден в Ruscore; "
+                    "повторим позже",
+                    flush=True,
+                )
+                _schedule_retry(key, info, now)
+                continue
+
+            ruscore_status = get_ruscore_status(event)
+            print(
+                f"📡 Ruscore: {match_name} | "
+                f"статус={ruscore_status!r}",
+                flush=True,
+            )
+
+            try:
+                r_s1, r_s2 = parse_score_for_match(event)
+            except Exception as e:
+                print(
+                    f"⚠️ Ruscore: не удалось разобрать счёт "
+                    f"для {match_name}: {e}",
+                    flush=True,
+                )
+                r_s1, r_s2 = None, None
+
+            if r_s1 is not None and r_s2 is not None:
+                score1, score2 = r_s1, r_s2
+
+                print(
+                    f"📡 Ruscore: счёт={score1}-{score2}",
+                    flush=True,
+                )
+
+                # Умная проверка по типу рынка
+                if _check_market_win(
+                    market_type, score1, score2, old_s1, old_s2
+                ):
+                    if _finish_signal(
+                        key, info, True, score1, score2, now
+                    ):
+                        pending_checks.pop(key, None)
+                    continue
+
+                # Если счёт не изменился, но матч завершён — фиксируем «не зашло»
+                if is_finished_status(ruscore_status):
+                    if _finish_signal(
+                        key, info, False, score1, score2, now
+                    ):
+                        pending_checks.pop(key, None)
+                    continue
+
+                # Данных достаточно, но результата пока нет — повторим позже
+                _schedule_retry(key, info, now)
+                continue
+
+            else:
+                print(
+                    f"⚠️ Ruscore: счёт не распознан для {match_name}",
+                    flush=True,
+                )
+
+                # Если статус явно говорит «завершён», но счёта нет —
+                # не можем корректно закрыть сигнал, повторим позже
+                _schedule_retry(key, info, now)
+                continue
+
+        # ----------------------------------------------------
+        # 4. НЕДОСТАТОЧНО ДАННЫХ
+        # ----------------------------------------------------
+
+        print(
+            f"⚠️ {match_name}: недостаточно данных для проверки "
+            "(нет 1xLite и Ruscore); повторим позже",
+            flush=True,
+        )
+        _schedule_retry(key, info, now)
