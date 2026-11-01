@@ -127,19 +127,36 @@ def monitor():
             flush=True,
         )
 
-    for game in games:
+        for game in games:
         try:
             parsed = parse_game(game)
+
             if not parsed:
                 continue
 
-# Сохраняем обычную историю динамики OLD.
-update_match_history(parsed, now_ts, recent_snapshots)
+            # ID именно текущего матча.
+            gid = parsed.get("game_id", game.get("id"))
 
-# Собираем импульс команд и температуру матча.
-match_momentum.update_momentum(parsed, now_ts)
+            # Сохраняем обычную историю динамики OLD.
+            update_match_history(
+                parsed,
+                now_ts,
+                recent_snapshots
+            )
 
-            if not common_ok(parsed, gid, now_ts, last_scores):
+            # Собираем импульс команд и температуру матча.
+            # Momentum не отправляет сигналы и не меняет стратегии.
+            match_momentum.update_momentum(
+                parsed,
+                now_ts
+            )
+
+            if not common_ok(
+                parsed,
+                gid,
+                now_ts,
+                last_scores
+            ):
                 continue
 
             for strategy_func in (
