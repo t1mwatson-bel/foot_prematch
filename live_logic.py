@@ -137,6 +137,93 @@ def fetch_1xlite_game_by_id(game_id):
         print(f"⚠️ Ошибка GetGameZip для ID={game_id}: {e}", flush=True)
         return None
 
+# ============================================================
+# ПОЛУЧЕНИЕ КОЭФФИЦИЕНТА НА ИНДИВИДУАЛЬНЫЙ ТОТАЛ
+# ============================================================
+
+def get_odd_individual_total(game, side="home", target=0.5):
+    """
+    Ищет коэффициент на Индивидуальный Тотал команды.
+
+    side="home" — ИТ Хозяев.
+    side="away" — ИТ Гостей.
+
+    target — линия тотала (0.5, 1.5, 2.5 и т.д.).
+
+    Поля 1xLite (GetGameZip):
+        T / type      — тип события (9=общий тотал, 10=ИТ1, 11=ИТ2)
+        P / parameter — линия
+        C / cf        — коэффициент
+    """
+
+    if not isinstance(game, dict):
+        return None
+
+    try:
+        target = float(target)
+    except (TypeError, ValueError):
+        target = 0.5
+
+    if side not in ("home", "away"):
+        return None
+
+    # ИТ в 1xLite обычно находятся в группе 17 ("Тоталы").
+    # На всякий случай проверяем все группы.
+    groups = game.get("centralBlockEventGroups") or []
+
+    if not isinstance(groups, list):
+        return None
+
+    for grp in groups:
+        if not isinstance(grp, dict):
+            continue
+
+        event_lists = grp.get("events") or []
+
+        if not isinstance(event_lists, list):
+            continue
+
+        for event_list in event_lists:
+            if not isinstance(event_list, list):
+                continue
+
+            for item in event_list:
+                if not isinstance(item, dict):
+                    continue
+
+                item_type = item.get("T", item.get("type"))
+                parameter = item.get("P", item.get("parameter"))
+                odd = item.get("C", item.get("cf"))
+
+                try:
+                    item_type = (
+                        int(item_type)
+                        if item_type is not None
+                        else 0
+                    )
+                    parameter = float(parameter)
+                    odd = float(odd)
+                except (TypeError, ValueError):
+                    continue
+
+                # Проверяем нужную линию.
+                if abs(parameter - target) > 0.001:
+                    continue
+
+                # Отбрасываем некорректные коэффициенты.
+                if odd <= 1.0:
+                    continue
+
+                # ИТ хозяев.
+                if side == "home" and item_type == 10:
+                    return odd
+
+                # ИТ гостей.
+                if side == "away" and item_type == 11:
+                    return odd
+
+    return None 
+
 
 def find_1xlite_game(games, game_id):
     """Ищет матч по точному ID."""
