@@ -239,29 +239,25 @@ def _save_snapshot(con, snap):
             red2
         )
         VALUES (
-            :game_id,
-            :ts,
-            :minute,
-            :score,
-            :team1,
-            :team2,
-            :xg1,
-            :xg2,
-            :shots_on1,
-            :shots_on2,
-            :shots_all1,
-            :shots_all2,
-            :corners1,
-            :corners2,
-            :att1,
-            :att2,
-            :corners1,
-            :corners2,
-            :att1,
-            :att2,
-            :red1,
-            :red2
-        )
+    :game_id,
+    :ts,
+    :minute,
+    :score,
+    :team1,
+    :team2,
+    :xg1,
+    :xg2,
+    :shots_on1,
+    :shots_on2,
+    :shots_all1,
+    :shots_all2,
+    :corners1,
+    :corners2,
+    :att1,
+    :att2,
+    :red1,
+    :red2
+)
     """, snap)
 
     return cursor.rowcount > 0
