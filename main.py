@@ -14,6 +14,7 @@ from stats_parser import (
     parse_game,
     update_match_history,
     common_ok,
+    strategy_individual_total,
     strategy_xg,
     strategy_shots,
     strategy_corners,
