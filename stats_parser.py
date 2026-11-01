@@ -140,6 +140,56 @@ def strategy_combo(p):
     if (p["red1"] if side == "home" else p["red2"]) > 0: return None
     return {"strategy": "Комбо xG+углы", "emoji": "💡", "dominant": p["team1"] if side == "home" else p["team2"], "key": f"xG {xg_diff:.2f}, углы {c_diff}", "min_odd": S6_MIN_ODD}
 
+def strategy_individual_total(p):
+    """
+    ИТ Хозяев/Гостей ТБ 0.5.
+    Ловит момент, когда одна команда доминирует по импульсу, но счёт ещё 0:0.
+    """
+    momentum = p.get("momentum") or {}
+
+    if not momentum.get("available"):
+        return None
+
+    if p["minute"] > S7_IND_TOTAL_MAX_MINUTE:
+        return None
+
+    # Счёт должен быть 0:0 — иначе ТБ 0.5 у команды уже не сыграет
+    if p["s1"] != 0 or p["s2"] != 0:
+        return None
+
+    leader = momentum.get("leader")
+    if leader not in ("home", "away"):
+        return None
+
+    # Безопасное извлечение импульса (вдруг структура поменяется)
+    side_block = momentum.get(leader) or {}
+    impulse = side_block.get("impulse", 0)
+    temperature = momentum.get("temperature", 0)
+
+    if leader == "home":
+        if p["red1"] > 0:
+            return None
+        return {
+            "strategy": "ИТ Хозяев ТБ 0.5",
+            "emoji": "🎯",
+            "dominant": p["team1"],
+            "key": f"импульс {impulse}, темп {temperature}",
+            "min_odd": S7_IND_TOTAL_MIN_ODD,
+            "market_type": "individual_home",
+        }
+
+    # leader == "away"
+    if p["red2"] > 0:
+        return None
+    return {
+        "strategy": "ИТ Гостей ТБ 0.5",
+        "emoji": "🎯",
+        "dominant": p["team2"],
+        "key": f"импульс {impulse}, темп {temperature}",
+        "min_odd": S7_IND_TOTAL_MIN_ODD,
+        "market_type": "individual_away",
+    }
+
 def strategy_early_goal(p):
     """
     Ловит резкий всплеск активности (Momentum) в начале матча.
