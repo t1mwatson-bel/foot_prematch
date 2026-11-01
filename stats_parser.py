@@ -212,3 +212,21 @@ def strategy_fixed_total(p):
             "target_total": 1.5  # Указываем, на какой тотал ставим
         }
     return None
+
+def strategy_individual_total(p):
+    # Ищем матч, где одна команда явно доминирует по импульсу
+    momentum = p.get("momentum", {})
+    if not momentum.get("available"):
+        return None
+        
+    # Если импульс хозяев высокий, а счет еще 0:0
+    if momentum.get("leader") == "home" and p["s1"] == 0 and p["minute"] < 75:
+        return {
+            "strategy": "ИТ Хозяев ТБ 0.5", 
+            "emoji": "🎯", 
+            "dominant": p["team1"], 
+            "key": f"импульс {momentum['home']['impulse']}, темп {momentum['temperature']}", 
+            "min_odd": 1.5,  # Требуем кэф не ниже 1.5
+            "market_type": "individual_home" # Указываем тип рынка!
+        }
+    return None
