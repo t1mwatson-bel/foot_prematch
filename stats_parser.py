@@ -2,224 +2,305 @@ from config import *
 import json, time
 from collections import deque
 
+
 def parse_stats(game):
     stats = {}
     tablo = ((game.get("scores") or {}).get("tabloStats")) or {}
     for key, items in tablo.items():
         if isinstance(items, list):
             for item in items:
-                if isinstance(item, dict) and item.get("name"): stats[item["name"]] = item
+                if isinstance(item, dict) and item.get("name"):
+                    stats[item["name"]] = item
     return stats
+
 
 def sv(stats, name, side="s1"):
     d = stats.get(name, {})
-    try: return float(d.get(side, 0) or 0)
-    except: return 0.0
+    try:
+        return float(d.get(side, 0) or 0)
+    except:
+        return 0.0
+
 
 def parse_game(game):
-    if not isinstance(game, dict) or (game.get("sport") or {}).get("id") != 1: return None
+    if not isinstance(game, dict) or (game.get("sport") or {}).get("id") != 1:
+        return None
     liga_id = (game.get("liga") or {}).get("id")
-    if liga_id not in LEAGUE_IDS: return None
+    if liga_id not in LEAGUE_IDS:
+        return None
     scores = game.get("scores") or {}
-    if (scores.get("currentPeriodName") == "Игра завершена" or scores.get("statusLineStr", "") == ""):
-        if not scores.get("timer", {}).get("timeRun"): return None
+    if (
+        scores.get("currentPeriodName") == "Игра завершена"
+        or scores.get("statusLineStr", "") == ""
+    ):
+        if not scores.get("timer", {}).get("timeRun"):
+            return None
     minute = (scores.get("timer") or {}).get("timeSec", 0) // 60
     score = scores.get("fullScore", "0-0")
-    try: s1, s2 = map(int, score.split("-"))
-    except: s1, s2 = 0, 0
+    try:
+        s1, s2 = map(int, score.split("-"))
+    except:
+        s1, s2 = 0, 0
     stats = parse_stats(game)
     o1 = (game.get("opponent1") or {}).get("fullName", "?")
     o2 = (game.get("opponent2") or {}).get("fullName", "?")
     return {
-        "game_id": game.get("id"), "liga_id": liga_id, "league": LEAGUE_IDS.get(liga_id, ""),
-        "team1": o1, "team2": o2, "match": f"{o1} — {o2}", "minute": minute, "score": score, "s1": s1, "s2": s2,
-        "xg1": sv(stats, "xG", "s1"), "xg2": sv(stats, "xG", "s2"),
-        "shots_on1": int(sv(stats, "Удары в створ", "s1")), "shots_on2": int(sv(stats, "Удары в створ", "s2")),
+        "game_id": game.get("id"),
+        "liga_id": liga_id,
+        "league": LEAGUE_IDS.get(liga_id, ""),
+        "team1": o1,
+        "team2": o2,
+        "match": f"{o1} — {o2}",
+        "minute": minute,
+        "score": score,
+        "s1": s1,
+        "s2": s2,
+        "xg1": sv(stats, "xG", "s1"),
+        "xg2": sv(stats, "xG", "s2"),
+        "shots_on1": int(sv(stats, "Удары в створ", "s1")),
+        "shots_on2": int(sv(stats, "Удары в створ", "s2")),
         "shots_all1": int(sv(stats, "Удары в створ", "s1") + sv(stats, "Удары в сторону ворот", "s1")),
         "shots_all2": int(sv(stats, "Удары в створ", "s2") + sv(stats, "Удары в сторону ворот", "s2")),
-        "att1": int(sv(stats, "Опасные атаки", "s1")), "att2": int(sv(stats, "Опасные атаки", "s2")),
-        "corners1": int(sv(stats, "Угловые", "s1")), "corners2": int(sv(stats, "Угловые", "s2")),
-        "red1": int(sv(stats, "Красные карточки", "s1")), "red2": int(sv(stats, "Красные карточки", "s2")),
+        "att1": int(sv(stats, "Опасные атаки", "s1")),
+        "att2": int(sv(stats, "Опасные атаки", "s2")),
+        "corners1": int(sv(stats, "Угловые", "s1")),
+        "corners2": int(sv(stats, "Угловые", "s2")),
+        "red1": int(sv(stats, "Красные карточки", "s1")),
+        "red2": int(sv(stats, "Красные карточки", "s2")),
     }
+
 
 def get_1x2_odds(game):
     odds = {}
     for grp in (game.get("eventGroups") or []):
-        if grp.get("groupId") != 1: continue
+        if grp.get("groupId") != 1:
+            continue
         for e in (grp.get("events") or []):
-            if not isinstance(e, list) or not e: continue
+            if not isinstance(e, list) or not e:
+                continue
             item = e[0]
-            if not isinstance(item, dict): continue
+            if not isinstance(item, dict):
+                continue
             t, c = item.get("T"), item.get("C")
-            if t == 1: odds["П1"] = c
-            elif t == 2: odds["X"] = c
-            elif t == 3: odds["П2"] = c
+            if t == 1:
+                odds["П1"] = c
+            elif t == 2:
+                odds["X"] = c
+            elif t == 3:
+                odds["П2"] = c
         break
     return odds
+
 
 def get_odd_total(game, total_goals):
     target = float(total_goals) + 0.5
     for grp in (game.get("centralBlockEventGroups") or []):
-        if not isinstance(grp, dict) or grp.get("groupId") != 17: continue
+        if not isinstance(grp, dict) or grp.get("groupId") != 17:
+            continue
         for event_list in (grp.get("events") or []):
-            if not isinstance(event_list, list): continue
+            if not isinstance(event_list, list):
+                continue
             for item in event_list:
-                if not isinstance(item, dict) or item.get("type") != 9: continue
+                if not isinstance(item, dict) or item.get("type") != 9:
+                    continue
                 try:
-                    parameter, odd = float(item.get("parameter")), float(item.get("cf"))
-                except: continue
-                if abs(parameter - target) < 0.001 and odd > 1.0: return odd
+                    parameter = float(item.get("parameter"))
+                    odd = float(item.get("cf"))
+                except:
+                    continue
+                if abs(parameter - target) < 0.001 and odd > 1.0:
+                    return odd
     return None
+
 
 def update_match_history(p, now_ts, recent_snapshots):
     gid = p.get("game_id")
-    if gid is None: return
+    if gid is None:
+        return
     hist = recent_snapshots.setdefault(gid, deque(maxlen=20))
-    snapshot = {"ts": now_ts, "minute": p["minute"], "score": p["score"], "xg1": p["xg1"], "xg2": p["xg2"], "shots_on1": p["shots_on1"], "shots_on2": p["shots_on2"], "shots_all1": p["shots_all1"], "shots_all2": p["shots_all2"], "corners1": p["corners1"], "corners2": p["corners2"], "att1": p["att1"], "att2": p["att2"]}
-    if hist and hist[-1]["ts"] == now_ts: hist[-1] = snapshot
-    else: hist.append(snapshot)
-    while hist and now_ts - hist[0]["ts"] > 900: hist.popleft()
+    snapshot = {
+        "ts": now_ts,
+        "minute": p["minute"],
+        "score": p["score"],
+        "xg1": p["xg1"],
+        "xg2": p["xg2"],
+        "shots_on1": p["shots_on1"],
+        "shots_on2": p["shots_on2"],
+        "shots_all1": p["shots_all1"],
+        "shots_all2": p["shots_all2"],
+        "corners1": p["corners1"],
+        "corners2": p["corners2"],
+        "att1": p["att1"],
+        "att2": p["att2"],
+    }
+    if hist and hist[-1]["ts"] == now_ts:
+        hist[-1] = snapshot
+    else:
+        hist.append(snapshot)
+    while hist and now_ts - hist[0]["ts"] > 900:
+        hist.popleft()
     for old_gid in list(recent_snapshots):
-        if not recent_snapshots[old_gid] or now_ts - recent_snapshots[old_gid][-1]["ts"] > 7200: del recent_snapshots[old_gid]
+        if (
+            not recent_snapshots[old_gid]
+            or now_ts - recent_snapshots[old_gid][-1]["ts"] > 7200
+        ):
+            del recent_snapshots[old_gid]
     reference = None
     for item in hist:
         if 300 <= (now_ts - item["ts"]) <= 900:
-            reference = item; break
-    p["trend"] = {"available": False, "xg_delta": 0.0, "shots_on_delta": 0, "shots_delta": 0, "corners_delta": 0, "attacks_delta": 0}
+            reference = item
+            break
+    p["trend"] = {
+        "available": False,
+        "xg_delta": 0.0,
+        "shots_on_delta": 0,
+        "shots_delta": 0,
+        "corners_delta": 0,
+        "attacks_delta": 0,
+    }
     if reference:
-        p["trend"] = {"available": True, "xg_delta": round((p["xg1"] + p["xg2"]) - (reference["xg1"] + reference["xg2"]), 3), "shots_on_delta": (p["shots_on1"] + p["shots_on2"]) - (reference["shots_on1"] + reference["shots_on2"]), "shots_delta": (p["shots_all1"] + p["shots_all2"]) - (reference["shots_all1"] + reference["shots_all2"]), "corners_delta": (p["corners1"] + p["corners2"]) - (reference["corners1"] + reference["corners2"]), "attacks_delta": (p["att1"] + p["att2"]) - (reference["att1"] + reference["att2"])}
+        p["trend"] = {
+            "available": True,
+            "xg_delta": round((p["xg1"] + p["xg2"]) - (reference["xg1"] + reference["xg2"]), 3),
+            "shots_on_delta": (p["shots_on1"] + p["shots_on2"]) - (reference["shots_on1"] + reference["shots_on2"]),
+            "shots_delta": (p["shots_all1"] + p["shots_all2"]) - (reference["shots_all1"] + reference["shots_all2"]),
+            "corners_delta": (p["corners1"] + p["corners2"]) - (reference["corners1"] + reference["corners2"]),
+            "attacks_delta": (p["att1"] + p["att2"]) - (reference["att1"] + reference["att2"]),
+        }
+
 
 def has_real_threat(p):
-    t_xg, t_sot, t_shots = p["xg1"] + p["xg2"], p["shots_on1"] + p["shots_on2"], p["shots_all1"] + p["shots_all2"]
+    t_xg = p["xg1"] + p["xg2"]
+    t_sot = p["shots_on1"] + p["shots_on2"]
+    t_shots = p["shots_all1"] + p["shots_all2"]
     trend = p.get("trend", {})
-    recent_pressure = trend.get("available") and (trend.get("xg_delta", 0) >= 0.15 or trend.get("shots_on_delta", 0) >= 1 or trend.get("shots_delta", 0) >= 3)
+    recent_pressure = (
+        trend.get("available")
+        and (
+            trend.get("xg_delta", 0) >= 0.15
+            or trend.get("shots_on_delta", 0) >= 1
+            or trend.get("shots_delta", 0) >= 3
+        )
+    )
     return t_xg >= 0.70 or t_sot >= 3 or t_shots >= 8 or recent_pressure
 
+
 def common_ok(p, gid, now_ts, last_scores):
-    if p["minute"] > MAX_MINUTE: return False
+    if p["minute"] > MAX_MINUTE:
+        return False
     prev = last_scores.get(gid)
-    if prev is None: last_scores[gid] = {"score": p["score"], "changed_at": 0}
+    if prev is None:
+        last_scores[gid] = {"score": p["score"], "changed_at": 0}
     elif prev.get("score") != p["score"]:
-        last_scores[gid] = {"score": p["score"], "changed_at": now_ts}; return False
+        last_scores[gid] = {"score": p["score"], "changed_at": now_ts}
+        return False
     changed_at = last_scores.get(gid, {}).get("changed_at", 0)
-    if changed_at and now_ts - changed_at < GOAL_COOLDOWN_SEC: return False
+    if changed_at and now_ts - changed_at < GOAL_COOLDOWN_SEC:
+        return False
     return True
 
+
 def strategy_xg(p):
-    diff, on_diff = abs(p["xg1"] - p["xg2"]), abs(p["shots_on1"] - p["shots_on2"])
-    if diff < S1_XG_DIFF or on_diff < S1_SHOTS_ON_DIFF: return None
+    diff = abs(p["xg1"] - p["xg2"])
+    on_diff = abs(p["shots_on1"] - p["shots_on2"])
+    if diff < S1_XG_DIFF or on_diff < S1_SHOTS_ON_DIFF:
+        return None
     side = "home" if p["xg1"] > p["xg2"] else "away"
-    if (p["red1"] if side == "home" else p["red2"]) > 0: return None
-    return {"strategy": "xG-мощь", "emoji": "🟢", "dominant": p["team1"] if side == "home" else p["team2"], "key": f"xG {diff:.2f}, створ {on_diff}", "min_odd": S1_MIN_ODD}
+    if (p["red1"] if side == "home" else p["red2"]) > 0:
+        return None
+    return {
+        "strategy": "xG-мощь",
+        "emoji": "🟢",
+        "dominant": p["team1"] if side == "home" else p["team2"],
+        "key": f"xG {diff:.2f}, створ {on_diff}",
+        "min_odd": S1_MIN_ODD,
+    }
+
 
 def strategy_shots(p):
-    diff, on_diff = abs(p["shots_all1"] - p["shots_all2"]), abs(p["shots_on1"] - p["shots_on2"])
-    if diff < S2_SHOTS_DIFF or on_diff < S2_SHOTS_ON_DIFF: return None
+    diff = abs(p["shots_all1"] - p["shots_all2"])
+    on_diff = abs(p["shots_on1"] - p["shots_on2"])
+    if diff < S2_SHOTS_DIFF or on_diff < S2_SHOTS_ON_DIFF:
+        return None
     side = "home" if p["shots_all1"] > p["shots_all2"] else "away"
-    if (p["red1"] if side == "home" else p["red2"]) > 0: return None
-    return {"strategy": "Удары", "emoji": "🥅", "dominant": p["team1"] if side == "home" else p["team2"], "key": f"удары {diff}, створ {on_diff}", "min_odd": S2_MIN_ODD}
+    if (p["red1"] if side == "home" else p["red2"]) > 0:
+        return None
+    return {
+        "strategy": "Удары",
+        "emoji": "🥅",
+        "dominant": p["team1"] if side == "home" else p["team2"],
+        "key": f"удары {diff}, створ {on_diff}",
+        "min_odd": S2_MIN_ODD,
+    }
+
 
 def strategy_corners(p):
-    c_diff, a_diff = abs(p["corners1"] - p["corners2"]), abs(p["att1"] - p["att2"])
-    if c_diff < S3_CORNERS_DIFF or a_diff < S3_ATT_DIFF or not has_real_threat(p): return None
+    c_diff = abs(p["corners1"] - p["corners2"])
+    a_diff = abs(p["att1"] - p["att2"])
+    if c_diff < S3_CORNERS_DIFF or a_diff < S3_ATT_DIFF or not has_real_threat(p):
+        return None
     side = "home" if p["corners1"] > p["corners2"] else "away"
-    if (p["red1"] if side == "home" else p["red2"]) > 0: return None
-    return {"strategy": "Углы + атаки", "emoji": "🚩", "dominant": p["team1"] if side == "home" else p["team2"], "key": f"углы {c_diff}, атаки {a_diff}", "min_odd": S3_MIN_ODD}
+    if (p["red1"] if side == "home" else p["red2"]) > 0:
+        return None
+    return {
+        "strategy": "Углы + атаки",
+        "emoji": "🚩",
+        "dominant": p["team1"] if side == "home" else p["team2"],
+        "key": f"углы {c_diff}, атаки {a_diff}",
+        "min_odd": S3_MIN_ODD,
+    }
+
 
 def strategy_attacks(p):
     a_diff = abs(p["att1"] - p["att2"])
-    if a_diff < S5_ATT_DIFF or not has_real_threat(p): return None
+    if a_diff < S5_ATT_DIFF or not has_real_threat(p):
+        return None
     side = "home" if p["att1"] > p["att2"] else "away"
-    if (p["red1"] if side == "home" else p["red2"]) > 0: return None
-    return {"strategy": "Опасные атаки", "emoji": "⚔️", "dominant": p["team1"] if side == "home" else p["team2"], "key": f"атаки {a_diff}", "min_odd": S5_MIN_ODD}
-
-def strategy_combo(p):
-    xg_diff, c_diff = abs(p["xg1"] - p["xg2"]), abs(p["corners1"] - p["corners2"])
-    if xg_diff < S6_XG_DIFF or c_diff < S6_CORNERS_DIFF: return None
-    side = "home" if p["xg1"] > p["xg2"] else "away"
-    if (p["red1"] if side == "home" else p["red2"]) > 0: return None
-    return {"strategy": "Комбо xG+углы", "emoji": "💡", "dominant": p["team1"] if side == "home" else p["team2"], "key": f"xG {xg_diff:.2f}, углы {c_diff}", "min_odd": S6_MIN_ODD}
-
-def strategy_individual_total(p):
-    """
-    ИТ Хозяев/Гостей ТБ 0.5.
-    Ловит момент, когда одна команда доминирует по импульсу, но счёт ещё 0:0.
-    """
-    momentum = p.get("momentum") or {}
-
-    if not momentum.get("available"):
-        return None
-
-    if p["minute"] > S7_IND_TOTAL_MAX_MINUTE:
-        return None
-
-    # Счёт должен быть 0:0 — иначе ТБ 0.5 у команды уже не сыграет
-    if p["s1"] != 0 or p["s2"] != 0:
-        return None
-
-    leader = momentum.get("leader")
-    if leader not in ("home", "away"):
-        return None
-
-    # Безопасное извлечение импульса (вдруг структура поменяется)
-    side_block = momentum.get(leader) or {}
-    impulse = side_block.get("impulse", 0)
-    temperature = momentum.get("temperature", 0)
-
-    if leader == "home":
-        if p["red1"] > 0:
-            return None
-        return {
-            "strategy": "ИТ Хозяев ТБ 0.5",
-            "emoji": "🎯",
-            "dominant": p["team1"],
-            "key": f"импульс {impulse}, темп {temperature}",
-            "min_odd": S7_IND_TOTAL_MIN_ODD,
-            "market_type": "individual_home",
-        }
-
-    # leader == "away"
-    if p["red2"] > 0:
+    if (p["red1"] if side == "home" else p["red2"]) > 0:
         return None
     return {
-        "strategy": "ИТ Гостей ТБ 0.5",
-        "emoji": "🎯",
-        "dominant": p["team2"],
-        "key": f"импульс {impulse}, темп {temperature}",
-        "min_odd": S7_IND_TOTAL_MIN_ODD,
-        "market_type": "individual_away",
+        "strategy": "Опасные атаки",
+        "emoji": "⚔️",
+        "dominant": p["team1"] if side == "home" else p["team2"],
+        "key": f"атаки {a_diff}",
+        "min_odd": S5_MIN_ODD,
     }
 
+
+def strategy_combo(p):
+    xg_diff = abs(p["xg1"] - p["xg2"])
+    c_diff = abs(p["corners1"] - p["corners2"])
+    if xg_diff < S6_XG_DIFF or c_diff < S6_CORNERS_DIFF:
+        return None
+    side = "home" if p["xg1"] > p["xg2"] else "away"
+    if (p["red1"] if side == "home" else p["red2"]) > 0:
+        return None
+    return {
+        "strategy": "Комбо xG+углы",
+        "emoji": "💡",
+        "dominant": p["team1"] if side == "home" else p["team2"],
+        "key": f"xG {xg_diff:.2f}, углы {c_diff}",
+        "min_odd": S6_MIN_ODD,
+    }
+
+
 def strategy_early_goal(p):
-    """
-    Ловит резкий всплеск активности (Momentum) в начале матча.
-    Работает, когда счет 0-0 или 1-1, но команды резко прибавили.
-    """
     trend = p.get("trend", {})
     if not trend.get("available"):
         return None
-        
-    # Если за последние 5-10 минут ударов стало больше на 4, а xG вырос на 0.3
     if trend.get("shots_delta", 0) >= 4 and trend.get("xg_delta", 0) >= 0.3:
-        # И при этом счет пока 0-0 или 1-1 (только начинается игра)
         if p["s1"] + p["s2"] <= 2:
             return {
-                "strategy": "Ранний гол (Momentum)", 
-                "emoji": "⚡", 
-                "dominant": "обе команды", 
-                "key": f"всплеск ударов +{trend['shots_delta']}, xG +{trend['xg_delta']:.2f}", 
-                "min_odd": 1.4
+                "strategy": "Ранний гол (Momentum)",
+                "emoji": "⚡",
+                "dominant": "обе команды",
+                "key": f"всплеск ударов +{trend['shots_delta']}, xG +{trend['xg_delta']:.2f}",
+                "min_odd": 1.4,
             }
     return None
 
+
 def get_fixed_total_odd(game, target):
-    """
-    Ищет коэффициент на фиксированный тотал (например, ТБ 1.5).
-    В API 1xLite тоталы обычно лежат в блоке groupId=17.
-    """
-    # Приводим к строке, чтобы искать точное совпадение (например, "1.5")
-    target_str = str(target)
-    
     for grp in (game.get("centralBlockEventGroups") or []):
         if not isinstance(grp, dict) or grp.get("groupId") != 17:
             continue
@@ -229,54 +310,66 @@ def get_fixed_total_odd(game, target):
             for item in event_list:
                 if not isinstance(item, dict):
                     continue
-                # Ищем тотал, где параметр совпадает с нашим
                 try:
                     parameter = float(item.get("parameter"))
                 except:
                     continue
-                
                 if abs(parameter - target) < 0.001:
-                    # Ищем коэффициент (тип 9 — это обычно тотал больше)
                     if item.get("type") == 9:
                         odd = item.get("cf")
                         if odd and float(odd) > 1.0:
                             return float(odd)
     return None
 
+
 def strategy_fixed_total(p):
-    """
-    Стратегия на фиксированный тотал (например, ТБ 1.5).
-    Работает, если счет 0:0, но xG уже высокий.
-    """
     total_goals = p["s1"] + p["s2"]
     total_xg = p["xg1"] + p["xg2"]
-    
-    # Если счет 0:0, но xG уже больше 1.5 (команды создали моменты, но не забили)
     if total_goals == 0 and total_xg >= 1.5:
         return {
             "strategy": "ТБ 1.5 (Голы назревают)",
             "emoji": "📈",
             "dominant": "обе команды",
             "key": f"xG {total_xg:.2f} при счете 0-0",
-            "min_odd": 1.3,  # Коэффициент на ТБ 1.5 обычно ниже, чем на следующий гол
-            "target_total": 1.5  # Указываем, на какой тотал ставим
+            "min_odd": 1.3,
+            "target_total": 1.5,
         }
     return None
 
+
 def strategy_individual_total(p):
-    # Ищем матч, где одна команда явно доминирует по импульсу
-    momentum = p.get("momentum", {})
+    momentum = p.get("momentum") or {}
     if not momentum.get("available"):
-        return None
-        
-    # Если импульс хозяев высокий, а счет еще 0:0
-    if momentum.get("leader") == "home" and p["s1"] == 0 and p["minute"] < 75:
-        return {
-            "strategy": "ИТ Хозяев ТБ 0.5", 
-            "emoji": "🎯", 
-            "dominant": p["team1"], 
-            "key": f"импульс {momentum['home']['impulse']}, темп {momentum['temperature']}", 
-            "min_odd": 1.5,  # Требуем кэф не ниже 1.5
-            "market_type": "individual_home" # Указываем тип рынка!
-        }
-    return None
+        return []
+    minute = int(p.get("minute", 0) or 0)
+    if minute < 15 or minute > 75:
+        return []
+    candidates = []
+    min_impulse = 3.0
+    sides = (
+        ("home", "individual_home", "s1", "red1", "team1", "Хозяева"),
+        ("away", "individual_away", "s2", "red2", "team2", "Гости"),
+    )
+    for side, market_type, score_key, red_key, team_key, label in sides:
+        team_momentum = momentum.get(side) or {}
+        try:
+            impulse = float(team_momentum.get("impulse", 0))
+        except (TypeError, ValueError):
+            continue
+        if impulse < min_impulse:
+            continue
+        if int(p.get(red_key, 0) or 0) > 0:
+            continue
+        current_score = int(p.get(score_key, 0) or 0)
+        target_total = current_score + 0.5
+        candidates.append({
+            "market_type": market_type,
+            "side": side,
+            "strategy": f"ИТБ {target_total:.1f} — {label}",
+            "emoji": "📈",
+            "dominant": p.get(team_key) or label,
+            "key": f"импульс {impulse:.2f}",
+            "min_odd": 1.30,
+            "target_total": target_total,
+        })
+    return candidates
