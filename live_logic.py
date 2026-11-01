@@ -1,4 +1,3 @@
-
 import time
 import json
 import re
@@ -491,6 +490,7 @@ def restore_pending_checks():
             "odd": row.get("odds"),
             "check_after": min(check_after, now),
             "attempts": attempts,
+            "market_type": row.get("market_type"),  # <-- Восстанавливаем тип рынка
         }
 
         restored[key] = info
@@ -520,6 +520,9 @@ def restore_pending_checks():
 
 def persist_check(game_id, info):
     try:
+        # ВАЖНО: Если в базе нет колонки market_type, 
+        # этот код выдаст ошибку. Добавь колонку в БД (в database.py),
+        # или закомментируй строку с market_type ниже.
         return db.update_live_signal_check(
             str(game_id),
             {
@@ -533,6 +536,7 @@ def persist_check(game_id, info):
                 "base_text": info.get("base_text"),
                 "check_after": info.get("check_after"),
                 "attempts": info.get("attempts", 0),
+                "market_type": info.get("market_type"), # <-- Сохраняем в БД
             },
         )
     except Exception as e:
@@ -911,18 +915,32 @@ def _finish_signal(key, info, won, score1, score2, now):
 # ВСПОМОГАТЕЛЬНАЯ ПРОВЕРКА СЧЁТА
 # ============================================================
 
-def _has_new_goal(score1, score2, old_s1, old_s2):
-    """Проверяет, увеличился ли счёт хотя бы одной команды."""
+def _check_market_win(market_type, score1, score2, old_s1, old_s2):
+    """
+    Проверяет, зашел ли сигнал, в зависимости от типа рынка.
+    """
     if score1 is None or score2 is None:
         return False
 
     try:
-        return (
-            int(score1) > int(old_s1)
-            or int(score2) > int(old_s2)
-        )
+        s1 = int(score1)
+        s2 = int(score2)
+        o1 = int(old_s1)
+        o2 = int(old_s2)
     except (TypeError, ValueError):
         return False
+
+    if market_type == "individual_home":
+        # Для ИТ Хозяев ждем гол именно от хозяев
+        return s1 > o1
+        
+    elif market_type == "individual_away":
+        # Для ИТ Гостей ждем гол именно от гостей
+        return s2 > o2
+        
+    else:
+        # Старая логика (следующий гол от любой команды)
+        return s1 > o1 or s2 > o2
 
 
 def _get_dates_to_check(info, now):
@@ -996,6 +1014,7 @@ def check_pending_results(pending_checks):
             continue
 
         match_name = info.get("match") or key
+        market_type = info.get("market_type") # <-- Берем тип рынка
 
         try:
             old_s1 = int(info["old_s1"])
@@ -1027,7 +1046,8 @@ def check_pending_results(pending_checks):
                 flush=True,
             )
 
-            if _has_new_goal(score1, score2, old_s1, old_s2):
+            # Используем новую умную проверку
+            if _check_market_win(market_type, score1, score2, old_s1, old_s2):
                 if _finish_signal(
                     key, info, True, score1, score2, now
                 ):
@@ -1090,9 +1110,8 @@ def check_pending_results(pending_checks):
                     score1, score2 = detail_s1, detail_s2
                     finished = detail_finished
 
-                    if _has_new_goal(
-                        score1, score2, old_s1, old_s2
-                    ):
+                    # Используем новую умную проверку
+                    if _check_market_win(market_type, score1, score2, old_s1, old_s2):
                         if _finish_signal(
                             key, info, True, score1, score2, now
                         ):
@@ -1115,316 +1134,3 @@ def check_pending_results(pending_checks):
 
         if team1 and team2:
             event = None
-            event_date = None
-
-            for date_str in _get_dates_to_check(info, now):
-                try:
-                    events = fetch_ruscore_events(date_str)
-                except Exception as e:
-                    print(
-                        f"⚠️ Ошибка Ruscore ({date_str}): {e}",
-                        flush=True,
-                    )
-                    continue
-
-                if not events:
-                    continue
-
-                try:
-                    candidate = find_match(events, team1, team2)
-                except Exception as e:
-                    print(
-                        f"⚠️ Ошибка поиска Ruscore: {e}",
-                        flush=True,
-                    )
-                    candidate = None
-
-                if candidate:
-                    event = candidate
-                    event_date = date_str
-                    break
-
-            if event:
-                try:
-                    r_score1, r_score2 = parse_score_for_match(
-                        event,
-                        team1,
-                        team2,
-                    )
-                except Exception as e:
-                    print(
-                        f"⚠️ Ошибка разбора счёта Ruscore: {e}",
-                        flush=True,
-                    )
-                    r_score1 = r_score2 = None
-
-                status_text = get_ruscore_status(event)
-                r_finished = is_finished_status(status_text)
-
-                print(
-                    f"📋 Ruscore: {match_name} | "
-                    f"дата={event_date} | "
-                    f"счёт={r_score1}-{r_score2} | "
-                    f"статус={status_text!r} | "
-                    f"завершён={r_finished}",
-                    flush=True,
-                )
-
-                try:
-                    if r_score1 is not None and r_score2 is not None:
-                        r_score1 = int(r_score1)
-                        r_score2 = int(r_score2)
-                except (TypeError, ValueError):
-                    r_score1 = r_score2 = None
-
-                if _has_new_goal(
-                    r_score1, r_score2, old_s1, old_s2
-                ):
-                    if _finish_signal(
-                        key, info, True, r_score1, r_score2, now
-                    ):
-                        pending_checks.pop(key, None)
-                    continue
-
-                if (
-                    r_score1 is not None
-                    and r_score2 is not None
-                    and r_finished
-                ):
-                    if _finish_signal(
-                        key, info, False, r_score1, r_score2, now
-                    ):
-                        pending_checks.pop(key, None)
-                    continue
-
-            else:
-                print(
-                    f"🔎 Матч не найден в Ruscore: {match_name}",
-                    flush=True,
-                )
-
-        else:
-            print(
-                f"⚠️ {match_name}: нет названий обеих команд "
-                "для поиска в Ruscore",
-                flush=True,
-            )
-
-        # ----------------------------------------------------
-        # 4. ИСХОД НЕ ПОДТВЕРЖДЁН
-        # ----------------------------------------------------
-
-        print(
-            f"⏳ Ожидание: {match_name}. "
-            "Исход пока не подтверждён; будет повторная проверка.",
-            flush=True,
-        )
-
-        _schedule_retry(key, info, now)
-
-
-# ============================================================
-# ФОРМАТ СИГНАЛА
-# ============================================================
-
-def format_signal_multi(p, strategies, odd):
-    total = p["s1"] + p["s2"]
-    tb1 = total + 0.5
-    trend = p.get("trend", {})
-
-    if trend.get("available"):
-        trend_line = (
-            f"📈 За 5–10 мин: xG +{trend['xg_delta']:.2f}, "
-            f"створ +{trend['shots_on_delta']}, "
-            f"удары +{trend['shots_delta']}\n"
-        )
-    else:
-        trend_line = "📈 Динамика: собирается история\n"
-
-    odd_line = (
-        f"💰 Кэф ТБ {tb1}: <b>{odd:.2f}</b>"
-        if odd is not None
-        else "💰 Кэф: недоступен"
-    )
-
-    return (
-        "🎯 <b>СИГНАЛ OLD — следующий гол до конца матча</b>\n"
-        f"{p['league']}\n"
-        f"⚽ <b>{p['match']}</b>\n"
-        f"📊 Счёт: <b>{p['score']}</b> | ⏱ {p['minute']}'\n"
-        f"🎯 xG: {p['xg1']:.2f} — {p['xg2']:.2f}\n"
-        f"🥅 Удары: {p['shots_all1']} — {p['shots_all2']} "
-        f"(в створ {p['shots_on1']} — {p['shots_on2']})\n"
-        f"⚔️ Опасные атаки: {p['att1']} — {p['att2']}\n"
-        f"🚩 Углы: {p['corners1']} — {p['corners2']}\n"
-        f"{trend_line}{odd_line}\n"
-        f"🧠 Фильтры: {', '.join(strategies)}\n"
-        "💡 Цель: хотя бы один гол до финального свистка; "
-        "это оценка, не гарантия."
-    )
-
-
-# ============================================================
-# ОТПРАВКА СИГНАЛА
-# ============================================================
-
-def try_send_signal(
-    p, strategy, now_ts, p_game_cache, sent_signals, pending_checks
-):
-    gid = p["game_id"]
-    key = str(gid)
-
-    if db.is_live_signal_sent(key):
-        return False
-
-    game = p_game_cache.get(gid) or p_game_cache.get(key) or {}
-
-    odd = get_odd_total(game, p["s1"] + p["s2"])
-
-    if odd is None:
-        print(
-            f"⚠️ Нет коэффициента для {p['match']}; сигнал не отправлен",
-            flush=True,
-        )
-        return False
-
-    try:
-        odd = float(odd)
-    except (TypeError, ValueError):
-        return False
-
-    if odd < strategy["min_odd"]:
-        return False
-
-    text = format_signal_multi(
-        p,
-        [f"{strategy['emoji']} {strategy['strategy']}"],
-        odd,
-    )
-
-    try:
-        msg_id = send_telegram(text)
-    except Exception as e:
-        print(f"❌ Ошибка отправки Telegram: {e}", flush=True)
-        return False
-
-    if not msg_id:
-        print(
-            f"⚠️ Telegram не подтвердил отправку: {p['match']}",
-            flush=True,
-        )
-        return False
-
-    today = datetime.now(MOSCOW_TZ).strftime("%Y-%m-%d")
-    check_after = now_ts + CHECK_FIRST_AFTER
-
-    signal_data = {
-        "game_id": key,
-        "match_name": p["match"],
-        "match": p["match"],
-        "league": p["league"],
-        "minute": p["minute"],
-        "score": p["score"],
-        "strategy": strategy["strategy"],
-        "dominant": strategy["dominant"],
-        "odds": odd,
-        "team1": p["team1"],
-        "team2": p["team2"],
-        "old_s1": p["s1"],
-        "old_s2": p["s2"],
-        "date_str": today,
-        "signal_ts": now_ts,
-        "sent_at": now_ts,
-        "message_id": msg_id,
-        "base_text": text,
-        "check_after": check_after,
-        "attempts": 0,
-    }
-
-    saved = db.save_live_signal(signal_data)
-
-    if not saved:
-        print(
-            f"❌ Не удалось сохранить сигнал в БД: "
-            f"{p['match']} ({key}). "
-            "Автоматическая проверка может не восстановиться.",
-            flush=True,
-        )
-        return False
-
-    # ========================================================
-    # OLD ML — СОХРАНЕНИЕ ПРИЗНАКОВ
-    # ========================================================
-    try:
-        ml_saved = ml.observe(
-            p,
-            strategy,
-            odds=odd,
-        )
-
-        if ml_saved:
-            print(
-                f"🧠 OLD ML: признаки сохранены | "
-                f"{p['match']} | {strategy['strategy']} | "
-                f"кэф {odd:.2f}",
-                flush=True,
-            )
-        else:
-            print(
-                f"ℹ️ OLD ML: признаки уже записаны или нет ID | "
-                f"{p['match']}",
-                flush=True,
-            )
-
-    except Exception as e:
-        print(
-            f"⚠️ OLD ML: не удалось сохранить признаки: {e}",
-            flush=True,
-        )
-
-    sent_signals[key] = {
-        "ts": now_ts,
-        "message_id": msg_id,
-        "base_text": text,
-        "strategies": [f"{strategy['emoji']} {strategy['strategy']}"],
-        "last_p": p,
-    }
-
-    pending_checks[key] = {
-        "team1": p["team1"],
-        "team2": p["team2"],
-        "match": p["match"],
-        "date_str": today,
-        "old_s1": int(p["s1"]),
-        "old_s2": int(p["s2"]),
-        "minute": int(p["minute"]),
-        "signal_ts": now_ts,
-        "message_id": msg_id,
-        "base_text": text,
-        "strategy": strategy["strategy"],
-        "odd": odd,
-        "check_after": check_after,
-        "attempts": 0,
-    }
-
-    persist_check(key, pending_checks[key])
-
-    log_result_record({
-        "record_type": "signal",
-        "game_id": key,
-        "timestamp": now_ts,
-        "match": p["match"],
-        "league": p["league"],
-        "strategy": strategy["strategy"],
-        "odd": odd,
-        "score_at_signal": p["score"],
-    })
-
-    print(
-        f"📤 СИГНАЛ: {p['match']} | {strategy['strategy']} | "
-        f"кэф {odd:.2f}; первая проверка через "
-        f"{CHECK_FIRST_AFTER} сек.",
-        flush=True,
-    )
-
-    return True
