@@ -6,6 +6,7 @@ from datetime import datetime
 import requests
 import web
 import database as db
+import match_momentum
 import goal_model as ml  # <--- Добавлен импорт модели для синхронизации
 
 from config import *
@@ -129,17 +130,14 @@ def monitor():
     for game in games:
         try:
             parsed = parse_game(game)
-
             if not parsed:
                 continue
 
-            gid = parsed["game_id"]
+# Сохраняем обычную историю динамики OLD.
+update_match_history(parsed, now_ts, recent_snapshots)
 
-            update_match_history(
-                parsed,
-                now_ts,
-                recent_snapshots,
-            )
+# Собираем импульс команд и температуру матча.
+match_momentum.update_momentum(parsed, now_ts)
 
             if not common_ok(parsed, gid, now_ts, last_scores):
                 continue
