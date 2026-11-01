@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 """
 OLD — Match Momentum.
@@ -46,10 +47,7 @@ def _number(value, default=0.0):
         if result != result:
             return float(default)
 
-        if result in (
-            float("inf"),
-            float("-inf"),
-        ):
+        if result in (float("inf"), float("-inf")):
             return float(default)
 
         return result
@@ -59,28 +57,24 @@ def _number(value, default=0.0):
 
 
 def _connect():
-    con = sqlite3.connect(
-        DB_PATH,
-        timeout=30
-    )
-
+    con = sqlite3.connect(DB_PATH, timeout=30)
     con.row_factory = sqlite3.Row
-
-    con.execute(
-        "PRAGMA busy_timeout = 30000"
-    )
-
+    con.execute("PRAGMA busy_timeout = 30000")
     return con
 
 
 # ============================================================
-# ИНИЦИАЛИЗАЦИЯ SQLITE
+# ИНИЦИАЛИЗАЦИЯ SQLITE И МИГРАЦИЯ
 # ============================================================
 
 def init_momentum_db():
     """
-    Создаёт отдельную таблицу Momentum.
-    Существующие таблицы OLD не изменяются.
+    Создаёт таблицу Momentum.
+
+    Если таблица уже существует, аккуратно добавляет
+    недостающие колонки названий команд.
+
+    Старые снимки и таблицы OLD не удаляются.
     """
 
     con = None
@@ -95,6 +89,9 @@ def init_momentum_db():
                 ts INTEGER NOT NULL,
                 minute INTEGER NOT NULL DEFAULT 0,
                 score TEXT DEFAULT '',
+
+                team1 TEXT DEFAULT '',
+                team2 TEXT DEFAULT '',
 
                 xg1 REAL DEFAULT 0,
                 xg2 REAL DEFAULT 0,
@@ -118,12 +115,38 @@ def init_momentum_db():
             )
         """)
 
+        # Проверяем структуру существующей таблицы.
+        columns = {
+            row["name"]
+            for row in con.execute(
+                "PRAGMA table_info(match_momentum_snapshots)"
+            ).fetchall()
+        }
+
+        # Добавляем названия команд без удаления истории.
+        if "team1" not in columns:
+            con.execute("""
+                ALTER TABLE match_momentum_snapshots
+                ADD COLUMN team1 TEXT DEFAULT ''
+            """)
+
+        if "team2" not in columns:
+            con.execute("""
+                ALTER TABLE match_momentum_snapshots
+                ADD COLUMN team2 TEXT DEFAULT ''
+            """)
+
         con.execute("""
             CREATE INDEX IF NOT EXISTS idx_momentum_game_ts
             ON match_momentum_snapshots(game_id, ts)
         """)
 
         con.commit()
+
+        print(
+            "✅ OLD Momentum: база данных готова",
+            flush=True
+        )
 
         return True
 
@@ -151,6 +174,9 @@ def _snapshot(p, now_ts):
 
         "minute": int(_number(p.get("minute"))),
         "score": str(p.get("score") or ""),
+
+        "team1": str(p.get("team1") or "Хозяева"),
+        "team2": str(p.get("team2") or "Гости"),
 
         "xg1": _number(p.get("xg1")),
         "xg2": _number(p.get("xg2")),
@@ -191,12 +217,14 @@ def _save_snapshot(con, snap):
         if elapsed < SNAPSHOT_INTERVAL:
             return False
 
-    con.execute("""
+    cursor = con.execute("""
         INSERT OR IGNORE INTO match_momentum_snapshots (
             game_id,
             ts,
             minute,
             score,
+            team1,
+            team2,
             xg1,
             xg2,
             shots_on1,
@@ -215,6 +243,8 @@ def _save_snapshot(con, snap):
             :ts,
             :minute,
             :score,
+            :team1,
+            :team2,
             :xg1,
             :xg2,
             :shots_on1,
@@ -225,12 +255,16 @@ def _save_snapshot(con, snap):
             :corners2,
             :att1,
             :att2,
+            :corners1,
+            :corners2,
+            :att1,
+            :att2,
             :red1,
             :red2
         )
     """, snap)
 
-    return True
+    return cursor.rowcount > 0
 
 
 # ============================================================
@@ -265,11 +299,6 @@ def _get_reference(con, game_id, now_ts, minutes):
 # ============================================================
 
 def _delta(current, previous):
-    """
-    Защита от отрицательных значений,
-    если API сбросил накопительный счётчик.
-    """
-
     current = _number(current)
     previous = _number(previous)
 
@@ -288,32 +317,12 @@ def _delta(current, previous):
 def _team_impulse(current, previous, side):
     n = "1" if side == "home" else "2"
 
-    xg = _delta(
-        current[f"xg{n}"],
-        previous[f"xg{n}"]
-    )
+    xg = _delta(current[f"xg{n}"], previous[f"xg{n}"])
+    sot = _delta(current[f"shots_on{n}"], previous[f"shots_on{n}"])
+    shots = _delta(current[f"shots_all{n}"], previous[f"shots_all{n}"])
+    corners = _delta(current[f"corners{n}"], previous[f"corners{n}"])
+    attacks = _delta(current[f"att{n}"], previous[f"att{n}"])
 
-    sot = _delta(
-        current[f"shots_on{n}"],
-        previous[f"shots_on{n}"]
-    )
-
-    shots = _delta(
-        current[f"shots_all{n}"],
-        previous[f"shots_all{n}"]
-    )
-
-    corners = _delta(
-        current[f"corners{n}"],
-        previous[f"corners{n}"]
-    )
-
-    attacks = _delta(
-        current[f"att{n}"],
-        previous[f"att{n}"]
-    )
-
-    # Экспериментальные веса.
     score = (
         xg * 8.0
         + sot * 2.5
@@ -359,24 +368,14 @@ def _window_result(con, snap, minutes):
         int(snap["ts"]) - int(previous["ts"])
     )
 
-    home = _team_impulse(
-        snap,
-        previous,
-        "home"
-    )
-
-    away = _team_impulse(
-        snap,
-        previous,
-        "away"
-    )
+    home = _team_impulse(snap, previous, "home")
+    away = _team_impulse(snap, previous, "away")
 
     temperature = round(
         home["score"] + away["score"],
         2
     )
 
-    # Приводим результат к условным пяти минутам.
     normalized_temperature = round(
         temperature * 300.0 / elapsed,
         2
@@ -420,10 +419,7 @@ def _classify_state(windows):
     w15 = windows.get("15", {})
 
     if not w5.get("available"):
-        return (
-            "INSUFFICIENT",
-            "Недостаточно истории"
-        )
+        return "INSUFFICIENT", "Недостаточно истории"
 
     current = _number(
         w5.get("normalized_temperature")
@@ -438,29 +434,17 @@ def _classify_state(windows):
             )
 
     if not baselines:
-        return (
-            "INSUFFICIENT",
-            "Недостаточно истории"
-        )
+        return "INSUFFICIENT", "Недостаточно истории"
 
     baseline = sum(baselines) / len(baselines)
 
     if current >= max(3.0, baseline * 1.25):
-        return (
-            "RISING",
-            "Активность растёт"
-        )
+        return "RISING", "Активность растёт"
 
     if current <= baseline * 0.70:
-        return (
-            "FALLING",
-            "Активность снижается"
-        )
+        return "FALLING", "Активность снижается"
 
-    return (
-        "STABLE",
-        "Активность стабильна"
-    )
+    return "STABLE", "Активность стабильна"
 
 
 # ============================================================
@@ -468,11 +452,6 @@ def _classify_state(windows):
 # ============================================================
 
 def update_momentum(p, now_ts=None):
-    """
-    Сохраняет снимок и добавляет результат
-    в p['momentum'].
-    """
-
     if (
         not isinstance(p, dict)
         or p.get("game_id") is None
@@ -483,7 +462,6 @@ def update_momentum(p, now_ts=None):
         }
 
     now_ts = int(now_ts or time.time())
-
     snap = _snapshot(p, now_ts)
 
     con = None
@@ -493,42 +471,28 @@ def update_momentum(p, now_ts=None):
 
         _save_snapshot(con, snap)
 
-        # Удаляем старые снимки.
         con.execute("""
             DELETE FROM match_momentum_snapshots
             WHERE ts < ?
-        """, (
-            now_ts - HISTORY_SECONDS,
-        ))
+        """, (now_ts - HISTORY_SECONDS,))
 
         con.commit()
 
         windows = {
-            str(minutes): _window_result(
-                con,
-                snap,
-                minutes
-            )
+            str(minutes): _window_result(con, snap, minutes)
             for minutes in WINDOWS
         }
 
         state, state_label = _classify_state(windows)
-
         w5 = windows["5"]
 
         if w5.get("available"):
-            home_score = _number(
-                w5["home_normalized"]
-            )
-
-            away_score = _number(
-                w5["away_normalized"]
-            )
+            home_score = _number(w5["home_normalized"])
+            away_score = _number(w5["away_normalized"])
         else:
             home_score = 0.0
             away_score = 0.0
 
-        # Определяем команду с большей активностью.
         if not w5.get("available"):
             leader = "unknown"
             leader_label = "Пока нет данных"
@@ -578,10 +542,7 @@ def update_momentum(p, now_ts=None):
                 ),
             },
 
-            "temperature": (
-                w5.get("normalized_temperature")
-            ),
-
+            "temperature": w5.get("normalized_temperature"),
             "windows": windows,
             "updated_ts": now_ts,
         }
@@ -611,6 +572,74 @@ def update_momentum(p, now_ts=None):
 
 
 # ============================================================
+# СПИСОК ПОСЛЕДНИХ МАТЧЕЙ ДЛЯ САЙТА
+# ============================================================
+
+def get_recent_momentum_matches(limit=50):
+    """
+    Возвращает последние матчи, по которым
+    собиралась история Momentum.
+
+    Используется сайтом для выбора матча.
+    """
+
+    con = None
+
+    try:
+        con = _connect()
+
+        limit = max(1, min(int(limit), 200))
+
+        rows = con.execute("""
+            SELECT
+                m.game_id,
+                m.ts,
+                m.team1,
+                m.team2,
+                m.minute,
+                m.score
+            FROM match_momentum_snapshots AS m
+
+            INNER JOIN (
+                SELECT
+                    game_id,
+                    MAX(ts) AS last_ts
+                FROM match_momentum_snapshots
+                GROUP BY game_id
+            ) AS latest
+                ON latest.game_id = m.game_id
+               AND latest.last_ts = m.ts
+
+            ORDER BY m.ts DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+
+        return [
+            {
+                "game_id": str(row["game_id"]),
+                "ts": int(row["ts"]),
+                "team1": row["team1"] or "Хозяева",
+                "team2": row["team2"] or "Гости",
+                "minute": int(row["minute"] or 0),
+                "score": row["score"] or "",
+            }
+            for row in rows
+        ]
+
+    except Exception as exc:
+        print(
+            f"⚠️ OLD Momentum: ошибка списка матчей: {exc}",
+            flush=True
+        )
+
+        return []
+
+    finally:
+        if con:
+            con.close()
+
+
+# ============================================================
 # ИСТОРИЯ ДЛЯ ГРАФИКА САЙТА
 # ============================================================
 
@@ -625,6 +654,8 @@ def get_momentum_history(game_id, limit=180):
     try:
         con = _connect()
 
+        limit = max(1, min(int(limit), 1000))
+
         rows = con.execute("""
             SELECT *
             FROM match_momentum_snapshots
@@ -633,7 +664,7 @@ def get_momentum_history(game_id, limit=180):
             LIMIT ?
         """, (
             str(game_id),
-            max(1, min(int(limit), 1000))
+            limit
         )).fetchall()
 
         return [
