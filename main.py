@@ -127,8 +127,8 @@ def monitor():
             flush=True,
         )
 
-        for game in games:
-            try:
+    for game in games:
+        try:
             parsed = parse_game(game)
 
             if not parsed:
