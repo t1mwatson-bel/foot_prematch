@@ -1304,7 +1304,7 @@ def try_send_signal(
 
     game = p_game_cache.get(gid) or p_game_cache.get(str(gid)) or {}
 
-        if market_type in ("individual_home", "individual_away"):
+    if market_type in ("individual_home", "individual_away"):
         side = "home" if market_type == "individual_home" else "away"
         target = float(strategy.get("target_total", (p["s1"] if side == "home" else p["s2"]) + 0.5))
         
@@ -1412,107 +1412,15 @@ def try_send_signal(
         )
         return False
 
-    # ========================================================
-    # OLD ML — СОХРАНЕНИЕ ПРИЗНАКОВ (добавлено из полной версии)
-    # ========================================================
+    # OLD ML
     try:
         ml_saved = False
         if market_type == "next_goal":
             ml_saved = ml.observe(p, strategy, odds=odd)
-
         if ml_saved:
-            print(
-                f"🧠 OLD ML: признаки сохранены | "
-                f"{p['match']} | {strategy['strategy']} | "
-                f"кэф {odd:.2f}",
-                flush=True,
-            )
+            print(f"🧠 OLD ML: признаки сохранены | {p['match']} | {strategy['strategy']} | кэф {odd:.2f}", flush=True)
     except Exception as e:
-        print(
-            f"⚠️ OLD ML: не удалось сохранить признаки: {e}",
-            flush=True,
-        )
-
-    sent_signals[key] = {
-        "ts": now_ts,
-        "message_id": msg_id,
-        "base_text": text,
-        "strategies": [f"{strategy['emoji']} {strategy['strategy']}"],
-        "last_p": p,
-    }
-
-    pending_checks[key] = {
-        "team1": p["team1"],
-        "match_id": match_id,
-        "market_type": market_type,
-        "team2": p["team2"],
-        "match": p["match"],
-        "date_str": today,
-        "old_s1": int(p["s1"]),
-        "old_s2": int(p["s2"]),
-        "minute": int(p["minute"]),
-        "signal_ts": now_ts,
-        "message_id": msg_id,
-        "base_text": text,
-        "strategy": strategy["strategy"],
-        "odd": odd,
-        "check_after": check_after,
-        "attempts": 0,
-    }
-
-    persist_check(key, pending_checks[key])
-
-    log_result_record({
-        "record_type": "signal",
-        "game_id": key,
-        "timestamp": now_ts,
-        "match": p["match"],
-        "league": p["league"],
-        "strategy": strategy["strategy"],
-        "odd": odd,
-        "score_at_signal": p["score"],
-    })
-
-    print(
-        f"📤 СИГНАЛ: {p['match']} | {strategy['strategy']} | "
-        f"кэф {odd:.2f}; первая проверка через "
-        f"{CHECK_FIRST_AFTER} сек.",
-        flush=True,
-    )
-
-    return True
-
-    # ========================================================
-    # OLD ML — СОХРАНЕНИЕ ПРИЗНАКОВ
-    # ========================================================
-    try:
-        ml_saved = False
-        if market_type == "next_goal":
-            ml_saved = ml.observe(
-                p,
-                strategy,
-                odds=odd,
-            )
-
-        if ml_saved:
-            print(
-                f"🧠 OLD ML: признаки сохранены | "
-                f"{p['match']} | {strategy['strategy']} | "
-                f"кэф {odd:.2f}",
-                flush=True,
-            )
-        else:
-            print(
-                f"ℹ️ OLD ML: признаки уже записаны или нет ID | "
-                f"{p['match']}",
-                flush=True,
-            )
-
-    except Exception as e:
-        print(
-            f"⚠️ OLD ML: не удалось сохранить признаки: {e}",
-            flush=True,
-        )
+        print(f"⚠️ OLD ML: не удалось сохранить признаки: {e}", flush=True)
 
     sent_signals[key] = {
         "ts": now_ts,
