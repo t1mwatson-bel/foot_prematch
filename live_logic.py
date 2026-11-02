@@ -1304,10 +1304,31 @@ def try_send_signal(
 
     game = p_game_cache.get(gid) or p_game_cache.get(str(gid)) or {}
 
-    if market_type in ("individual_home", "individual_away"):
+        if market_type in ("individual_home", "individual_away"):
         side = "home" if market_type == "individual_home" else "away"
         target = float(strategy.get("target_total", (p["s1"] if side == "home" else p["s2"]) + 0.5))
+        
+        # 1. Ищем в кэше live-ленты (быстро)
         odd = get_odd_individual_total(game, side=side, target=target)
+        
+        # 2. Если нет — запрашиваем расширенный API по ID матча
+        if odd is None:
+            print(f"🔄 ИТ не найден в live, запрашиваем GetGameZip для ID={gid}...", flush=True)
+            detailed_game = fetch_1xlite_game_by_id(gid)
+            if detailed_game:
+                odd = get_odd_individual_total(detailed_game, side=side, target=target)
+                
+        # 3. Если всё равно нет — отладка
+        if odd is None:
+            print(f"🔍 ОТЛАДКА ИТ: Кэф для {side} на тотал {target} не найден.", flush=True)
+            if detailed_game:
+                found = False
+                for item in (detailed_game.get("events") or []):
+                    if isinstance(item, dict) and item.get("type") in (9, 10, 11):
+                        found = True
+                        print(f"  - В API есть: type={item.get('type')}, param={item.get('parameter')}, cf={item.get('cf')}", flush=True)
+                if not found:
+                    print("  - В блоке events вообще нет тоталов (type=9/10/11).", flush=True)
         
         # ====================================================
         # ОТЛАДКА: Если кэф не найден, выводим всё, что есть в API
