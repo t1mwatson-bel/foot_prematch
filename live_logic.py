@@ -147,6 +147,8 @@ def get_odd_individual_total(game, side="home", target=0.5):
         target = float(target)
     except (TypeError, ValueError):
         return None
+
+    # 1. Ищем в centralBlockEventGroups (старый GetGameZip)
     for group in (game.get("centralBlockEventGroups") or []):
         if not isinstance(group, dict):
             continue
@@ -162,33 +164,21 @@ def get_odd_individual_total(game, side="home", target=0.5):
                     odd = float(item.get("C", item.get("cf")))
                 except (TypeError, ValueError):
                     continue
-                if item_type == wanted_type and abs(parameter-target) < 0.001 and odd > 1:
+                if item_type == wanted_type and abs(parameter - target) < 0.001 and odd > 1:
                     return odd
-    return None
 
-def find_1xlite_game(games, game_id):
-    """Ищет матч по точному ID."""
-    if not games:
-        return None
-
-    target = str(game_id)
-
-    for game in games:
-        if not isinstance(game, dict):
+    # 2. Ищем в events (новый topGamesByStat / gameInfo)
+    for item in (game.get("events") or []):
+        if not isinstance(item, dict):
             continue
-
-        candidates = (
-            game.get("id"),
-            game.get("ID"),
-            game.get("I"),
-            game.get("_requested_id"),
-        )
-
-        if any(
-            value is not None and str(value) == target
-            for value in candidates
-        ):
-            return game
+        try:
+            item_type = int(item.get("T", item.get("type", 0)))
+            parameter = float(item.get("P", item.get("parameter")))
+            odd = float(item.get("C", item.get("cf")))
+        except (TypeError, ValueError):
+            continue
+        if item_type == wanted_type and abs(parameter - target) < 0.001 and odd > 1:
+            return odd
 
     return None
 
