@@ -44,6 +44,15 @@ def parse_game(game):
     stats = parse_stats(game)
     o1 = (game.get("opponent1") or {}).get("fullName", "?")
     o2 = (game.get("opponent2") or {}).get("fullName", "?")
+    
+    # Отладка: если xG = 0, выводим в консоль названия всех полей, чтобы понять, как называется xG в API
+    xg1 = sv(stats, "xG", "s1")
+    xg2 = sv(stats, "xG", "s2")
+    if xg1 == 0 and xg2 == 0 and stats:
+         # Раскомментируй строку ниже, если хочешь увидеть реальные названия полей в логах
+         # print(f"DEBUG STATS [{o1} — {o2}]: {list(stats.keys())}", flush=True)
+         pass
+
     return {
         "game_id": game.get("id"),
         "liga_id": liga_id,
@@ -55,8 +64,8 @@ def parse_game(game):
         "score": score,
         "s1": s1,
         "s2": s2,
-        "xg1": sv(stats, "xG", "s1"),
-        "xg2": sv(stats, "xG", "s2"),
+        "xg1": xg1,
+        "xg2": xg2,
         "shots_on1": int(sv(stats, "Удары в створ", "s1")),
         "shots_on2": int(sv(stats, "Удары в створ", "s2")),
         "shots_all1": int(sv(stats, "Удары в створ", "s1") + sv(stats, "Удары в сторону ворот", "s1")),
