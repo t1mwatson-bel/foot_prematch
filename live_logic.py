@@ -141,17 +141,15 @@ def fetch_1xlite_game_by_id(game_id):
 
 
 def get_odd_individual_total(game, side="home", target=0.5):
-    """Ищет кэф на ИТ в любом формате API (GetGameZip или topGamesByStat)."""
+    """Ищет кэф на ИТ (основной матч), исключая таймы."""
     wanted_type = 10 if side == "home" else 11
     try:
         target = float(target)
     except (TypeError, ValueError):
         return None
 
-    # 1. Проверяем centralBlockEventGroups (старый формат)
-    for group in (game.get("centralBlockEventGroups") or []):
-        if not isinstance(group, dict):
-            continue
+    def _check_group(group):
+        """Вспомогательная проверка одного блока."""
         for event_list in (group.get("events") or []):
             if not isinstance(event_list, list):
                 continue
@@ -164,10 +162,20 @@ def get_odd_individual_total(game, side="home", target=0.5):
                     odd = float(item.get("C", item.get("cf")))
                 except (TypeError, ValueError):
                     continue
+                # Если нашли нужный тип и параметр
                 if item_type == wanted_type and abs(parameter - target) < 0.001 and odd > 1:
                     return odd
+        return None
 
-    # 2. Проверяем events (новый формат topGamesByStat)
+    # 1. Ищем в centralBlockEventGroups (это ОСНОВНОЙ матч)
+    for group in (game.get("centralBlockEventGroups") or []):
+        if not isinstance(group, dict):
+            continue
+        result = _check_group(group)
+        if result:
+            return result
+
+    # 2. Если не нашли — ищем в корневых events (но только если это не под-игра)
     for item in (game.get("events") or []):
         if not isinstance(item, dict):
             continue
