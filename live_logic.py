@@ -1,4 +1,3 @@
-
 import time
 import json
 import re
@@ -52,10 +51,7 @@ def fetch_1xlite_live_games():
         )
 
         if response.status_code != 200:
-            print(
-                f"⚠️ 1xLite live: HTTP {response.status_code}",
-                flush=True,
-            )
+            print(f"⚠️ 1xLite live: HTTP {response.status_code}", flush=True)
             return None
 
         data = response.json()
@@ -64,9 +60,7 @@ def fetch_1xlite_live_games():
             return [g for g in data if isinstance(g, dict)]
 
         if isinstance(data, dict):
-            for field in (
-                "Value", "value", "games", "Games", "events", "Events"
-            ):
+            for field in ("Value", "value", "games", "Games", "events", "Events"):
                 value = data.get(field)
                 if isinstance(value, list):
                     return [g for g in value if isinstance(g, dict)]
@@ -103,19 +97,13 @@ def fetch_1xlite_game_by_id(game_id):
         )
 
         if response.status_code != 200:
-            print(
-                f"⚠️ GetGameZip: HTTP {response.status_code}, ID={game_id}",
-                flush=True,
-            )
+            print(f"⚠️ GetGameZip: HTTP {response.status_code}, ID={game_id}", flush=True)
             return None
 
         data = response.json()
 
         if not isinstance(data, dict):
-            print(
-                f"⚠️ GetGameZip: ответ не является объектом, ID={game_id}",
-                flush=True,
-            )
+            print(f"⚠️ GetGameZip: ответ не является объектом, ID={game_id}", flush=True)
             return None
 
         game = data.get("Value")
@@ -128,10 +116,7 @@ def fetch_1xlite_game_by_id(game_id):
             data["_requested_id"] = str(game_id)
             return data
 
-        print(
-            f"⚠️ GetGameZip не вернул данные матча, ID={game_id}",
-            flush=True,
-        )
+        print(f"⚠️ GetGameZip не вернул данные матча, ID={game_id}", flush=True)
         return None
 
     except Exception as e:
@@ -139,72 +124,20 @@ def fetch_1xlite_game_by_id(game_id):
         return None
 
 
-
-def get_odd_individual_total(game, side="home", target=0.5):
-    """Ищет кэф на ИТ (основной матч), исключая таймы."""
-    wanted_type = 10 if side == "home" else 11
-    try:
-        target = float(target)
-    except (TypeError, ValueError):
-        return None
-
-    def _check_group(group):
-        """Вспомогательная проверка одного блока."""
-        for event_list in (group.get("events") or []):
-            if not isinstance(event_list, list):
-                continue
-            for item in event_list:
-                if not isinstance(item, dict):
-                    continue
-                try:
-                    item_type = int(item.get("T", item.get("type", 0)))
-                    parameter = float(item.get("P", item.get("parameter")))
-                    odd = float(item.get("C", item.get("cf")))
-                except (TypeError, ValueError):
-                    continue
-                # Если нашли нужный тип и параметр
-                if item_type == wanted_type and abs(parameter - target) < 0.001 and odd > 1:
-                    return odd
-        return None
-
-    # 1. Ищем в centralBlockEventGroups (это ОСНОВНОЙ матч)
-    for group in (game.get("centralBlockEventGroups") or []):
-        if not isinstance(group, dict):
-            continue
-        result = _check_group(group)
-        if result:
-            return result
-
-    # 2. Если не нашли — ищем в корневых events (но только если это не под-игра)
-    for item in (game.get("events") or []):
-        if not isinstance(item, dict):
-            continue
-        try:
-            item_type = int(item.get("T", item.get("type", 0)))
-            parameter = float(item.get("P", item.get("parameter")))
-            odd = float(item.get("C", item.get("cf")))
-        except (TypeError, ValueError):
-            continue
-        if item_type == wanted_type and abs(parameter - target) < 0.001 and odd > 1:
-            return odd
-
-    return None
-
+# ============================================================
+# ПАРСИНГ СЧЁТА И ПОИСК МАТЧА
+# ============================================================
 
 def _parse_score_value(value):
     """Разбирает счёт из строки или словаря."""
     if isinstance(value, str):
-        match = re.search(
-            r"^\s*(\d+)\s*[-:]\s*(\d+)\s*$",
-            value,
-        )
+        match = re.search(r"^\s*(\d+)\s*[-:]\s*(\d+)\s*$", value)
         if match:
             return int(match.group(1)), int(match.group(2))
 
     if isinstance(value, dict):
         home = value.get("home", value.get("s1", value.get("S1")))
         away = value.get("away", value.get("s2", value.get("S2")))
-
         try:
             if home is not None and away is not None:
                 return int(home), int(away)
@@ -214,30 +147,56 @@ def _parse_score_value(value):
     return None, None
 
 
+def parse_1xlite_score(game):
+    """Разбирает счёт из известных вариантов ответа 1xLite."""
+    if not isinstance(game, dict):
+        return None, None
+
+    scores = game.get("scores") or {}
+    if isinstance(scores, dict):
+        for key in ("fullScore", "score", "currentScore", "result"):
+            s1, s2 = _parse_score_value(scores.get(key))
+            if s1 is not None and s2 is not None:
+                return s1, s2
+        s1, s2 = _parse_score_value(scores)
+        if s1 is not None and s2 is not None:
+            return s1, s2
+
+    sc = game.get("SC") or {}
+    if isinstance(sc, dict):
+        fs = sc.get("FS") or {}
+        if isinstance(fs, dict):
+            try:
+                s1 = fs.get("S1")
+                s2 = fs.get("S2")
+                if s1 is not None and s2 is not None:
+                    return int(s1), int(s2)
+            except (TypeError, ValueError):
+                pass
+        for key in ("FS", "S", "score", "Score"):
+            s1, s2 = _parse_score_value(sc.get(key))
+            if s1 is not None and s2 is not None:
+                return s1, s2
+
+    for key in ("fullScore", "score", "Score", "result"):
+        s1, s2 = _parse_score_value(game.get(key))
+        if s1 is not None and s2 is not None:
+            return s1, s2
+
+    return None, None
+
+
 def find_1xlite_game(games, game_id):
     """Ищет матч по точному ID."""
     if not games:
         return None
-
     target = str(game_id)
-
     for game in games:
         if not isinstance(game, dict):
             continue
-
-        candidates = (
-            game.get("id"),
-            game.get("ID"),
-            game.get("I"),
-            game.get("_requested_id"),
-        )
-
-        if any(
-            value is not None and str(value) == target
-            for value in candidates
-        ):
+        candidates = (game.get("id"), game.get("ID"), game.get("I"), game.get("_requested_id"))
+        if any(value is not None and str(value) == target for value in candidates):
             return game
-
     return None
 
 
@@ -250,7 +209,6 @@ def get_odd_individual_total(game, side="home", target=0.5):
         return None
 
     def _check_group(group):
-        """Вспомогательная проверка одного блока."""
         for event_list in (group.get("events") or []):
             if not isinstance(event_list, list):
                 continue
@@ -267,7 +225,6 @@ def get_odd_individual_total(game, side="home", target=0.5):
                     return odd
         return None
 
-    # 1. Ищем в centralBlockEventGroups (это ОСНОВНОЙ матч, без таймов)
     for group in (game.get("centralBlockEventGroups") or []):
         if not isinstance(group, dict):
             continue
@@ -275,7 +232,6 @@ def get_odd_individual_total(game, side="home", target=0.5):
         if result:
             return result
 
-    # 2. Если не нашли — ищем в корневых events
     for item in (game.get("events") or []):
         if not isinstance(item, dict):
             continue
@@ -294,41 +250,32 @@ def get_odd_individual_total(game, side="home", target=0.5):
 # ============================================================
 # ПРОВЕРКА ЗАВЕРШЕНИЯ МАТЧА
 # ============================================================
-def _collect_status_text(value):
-    """Собирает текстовые статусы из вложенных объектов."""
-    parts = []
 
+def _collect_status_text(value):
+    parts = []
     if isinstance(value, dict):
         for key, nested in value.items():
-            if str(key).lower() in {
-                "fs", "score", "scores", "s1", "s2", "value"
-            }:
+            if str(key).lower() in {"fs", "score", "scores", "s1", "s2", "value"}:
                 if str(key).lower() in {"s1", "s2"}:
                     continue
-
             if isinstance(nested, (dict, list)):
                 parts.extend(_collect_status_text(nested))
             elif nested is not None and isinstance(nested, str):
                 parts.append(nested)
-
     elif isinstance(value, list):
         for nested in value:
             parts.extend(_collect_status_text(nested))
-
     return parts
 
 
 def is_finished_status(status):
-    """Распознаёт явные текстовые признаки завершения матча."""
     if isinstance(status, dict):
         text = " ".join(_collect_status_text(status))
     else:
         text = str(status or "")
 
     text = text.lower().replace("ё", "е")
-    text = " ".join(
-        text.replace("_", " ").replace("-", " ").split()
-    )
+    text = " ".join(text.replace("_", " ").replace("-", " ").split())
 
     finished_values = {
         "finished", "ended", "ft", "final", "complete", "completed",
@@ -348,12 +295,10 @@ def is_finished_status(status):
         "завершена ", "матч завершен ", "окончен ",
         "окончена ", "закончен ", "закончена ",
     )
-
     return text.startswith(prefixes)
 
 
 def is_1xlite_finished(game):
-    """Проверяет завершение по текстовым статусам и явным флагам."""
     if not isinstance(game, dict):
         return False
 
@@ -361,32 +306,21 @@ def is_1xlite_finished(game):
     sc = game.get("SC") or {}
 
     status_values = [
-        game.get("status"),
-        game.get("statusName"),
-        game.get("statusText"),
-        game.get("statusLine"),
-        game.get("statusLineStr"),
-        game.get("periodName"),
-        game.get("currentPeriodName"),
+        game.get("status"), game.get("statusName"), game.get("statusText"),
+        game.get("statusLine"), game.get("statusLineStr"),
+        game.get("periodName"), game.get("currentPeriodName"),
     ]
 
     if isinstance(scores, dict):
         status_values.extend([
-            scores.get("status"),
-            scores.get("statusName"),
-            scores.get("statusText"),
-            scores.get("statusLine"),
-            scores.get("statusLineStr"),
-            scores.get("currentPeriodName"),
+            scores.get("status"), scores.get("statusName"), scores.get("statusText"),
+            scores.get("statusLine"), scores.get("statusLineStr"), scores.get("currentPeriodName"),
         ])
 
     if isinstance(sc, dict):
         status_values.extend([
-            sc.get("status"),
-            sc.get("statusName"),
-            sc.get("statusText"),
-            sc.get("periodName"),
-            sc.get("currentPeriodName"),
+            sc.get("status"), sc.get("statusName"), sc.get("statusText"),
+            sc.get("periodName"), sc.get("currentPeriodName"),
         ])
 
     for value in status_values:
@@ -396,35 +330,22 @@ def is_1xlite_finished(game):
     for container in (game, scores, sc):
         if not isinstance(container, dict):
             continue
-
         for field in ("isFinished", "finished", "isEnded", "ended"):
             value = container.get(field)
-
             if value is True or value == 1:
                 return True
-
-            if isinstance(value, str):
-                if value.strip().lower() in (
-                    "true", "yes", "finished", "ended"
-                ):
-                    return True
+            if isinstance(value, str) and value.strip().lower() in ("true", "yes", "finished", "ended"):
+                return True
 
     return False
 
 
 def get_ruscore_status(event):
-    """Извлекает статус Ruscore из разных вариантов структуры."""
     if not isinstance(event, dict):
         return ""
-
     parts = []
-
-    for key in (
-        "status", "statusName", "statusText", "state",
-        "period", "periodName", "matchStatus",
-    ):
+    for key in ("status", "statusName", "statusText", "state", "period", "periodName", "matchStatus"):
         value = event.get(key)
-
         if isinstance(value, dict):
             for subkey in ("label", "name", "text", "value", "short"):
                 nested = value.get(subkey)
@@ -432,7 +353,6 @@ def get_ruscore_status(event):
                     parts.append(nested)
         elif isinstance(value, str):
             parts.append(value)
-
     return " ".join(parts)
 
 
@@ -441,7 +361,6 @@ def get_ruscore_status(event):
 # ============================================================
 
 def restore_pending_checks():
-    """Восстанавливает ожидающие сигналы из основной БД."""
     restored = {}
     now = int(time.time())
 
@@ -466,7 +385,6 @@ def restore_pending_checks():
             for separator in (" — ", " – ", " - ", " vs ", " VS "):
                 if separator in match_name:
                     parts = match_name.split(separator, 1)
-
                     if len(parts) == 2:
                         team1 = team1 or parts[0].strip()
                         team2 = team2 or parts[1].strip()
@@ -477,21 +395,13 @@ def restore_pending_checks():
 
         if old_s1 is None or old_s2 is None:
             raw_score = str(row.get("score") or "").strip()
-            match = re.search(
-                r"^\s*(\d+)\s*[-:]\s*(\d+)\s*$",
-                raw_score,
-            )
-
+            match = re.search(r"^\s*(\d+)\s*[-:]\s*(\d+)\s*$", raw_score)
             if match:
                 old_s1 = int(match.group(1))
                 old_s2 = int(match.group(2))
 
         if old_s1 is None or old_s2 is None:
-            print(
-                f"⚠️ Сигнал {key}: исходный счёт отсутствует; "
-                "автоматическая проверка невозможна",
-                flush=True,
-            )
+            print(f"⚠️ Сигнал {key}: исходный счёт отсутствует; автоматическая проверка невозможна", flush=True)
             continue
 
         try:
@@ -503,17 +413,12 @@ def restore_pending_checks():
 
         sent_at = int(row.get("sent_at") or now)
         signal_ts = int(row.get("signal_ts") or sent_at)
-
         date_str = row.get("date_str")
 
         if not date_str:
-            date_str = datetime.fromtimestamp(
-                signal_ts,
-                MOSCOW_TZ,
-            ).strftime("%Y-%m-%d")
+            date_str = datetime.fromtimestamp(signal_ts, MOSCOW_TZ).strftime("%Y-%m-%d")
 
         message_id = row.get("message_id")
-
         try:
             message_id = int(message_id) if message_id else None
         except (TypeError, ValueError):
@@ -534,11 +439,7 @@ def restore_pending_checks():
             "team2": team2,
             "match_id": match_id,
             "market_type": row.get("market_type") or "next_goal",
-            "match": match_name or (
-                f"{team1} — {team2}"
-                if team1 and team2
-                else f"Матч {key}"
-            ),
+            "match": match_name or (f"{team1} — {team2}" if team1 and team2 else f"Матч {key}"),
             "date_str": date_str,
             "old_s1": old_s1,
             "old_s2": old_s2,
@@ -557,23 +458,9 @@ def restore_pending_checks():
         try:
             persist_check(key, info)
         except Exception as e:
-            print(
-                f"⚠️ Не удалось обновить данные сигнала {key}: {e}",
-                flush=True,
-            )
+            print(f"⚠️ Не удалось обновить данные сигнала {key}: {e}", flush=True)
 
-        if not team1 or not team2:
-            print(
-                f"⚠️ Сигнал {key}: не хватает названий команд "
-                "для поиска в Ruscore",
-                flush=True,
-            )
-
-    print(
-        f"♻️ Восстановлено ожидающих проверок: {len(restored)}",
-        flush=True,
-    )
-
+    print(f"♻️ Восстановлено ожидающих проверок: {len(restored)}", flush=True)
     return restored
 
 
@@ -595,15 +482,11 @@ def persist_check(game_id, info):
             },
         )
     except Exception as e:
-        print(
-            f"❌ Не удалось сохранить проверку {game_id}: {e}",
-            flush=True,
-        )
+        print(f"❌ Не удалось сохранить проверку {game_id}: {e}", flush=True)
         return False
 
 
 def _schedule_retry(key, info, now, delay=None):
-    """Планирует следующую попытку проверки результата."""
     try:
         info["attempts"] = int(info.get("attempts", 0)) + 1
     except (TypeError, ValueError):
@@ -624,31 +507,20 @@ def _schedule_retry(key, info, now, delay=None):
 # ============================================================
 
 def _build_result_line(row):
-    """Создаёт строку результата для завершённого сигнала из БД."""
     status = str(row.get("status") or "")
     final_score = str(row.get("final_score") or "—")
-
     old_s1 = row.get("old_s1")
     old_s2 = row.get("old_s2")
     minute = row.get("minute") or 0
 
     if status == "WIN":
-        signal_ts = int(
-            row.get("signal_ts")
-            or row.get("sent_at")
-            or time.time()
-        )
-        result_ts = int(
-            row.get("result_updated_at")
-            or time.time()
-        )
+        signal_ts = int(row.get("signal_ts") or row.get("sent_at") or time.time())
+        result_ts = int(row.get("result_updated_at") or time.time())
         elapsed = max(0, (result_ts - signal_ts) // 60)
-
         return (
             "✅ <b>ЗАШЛО</b>\n"
             f"📊 Было: {old_s1 if old_s1 is not None else 0}-"
-            f"{old_s2 if old_s2 is not None else 0} "
-            f"({minute}')\n"
+            f"{old_s2 if old_s2 is not None else 0} ({minute}')\n"
             f"📊 Стало: {final_score}\n"
             f"⏱ ~{elapsed} мин"
         )
@@ -661,64 +533,38 @@ def _build_result_line(row):
 
 
 def _edit_completed_signal(game_id, row, result_text=None):
-    """
-    Пытается обновить сообщение Telegram.
-    При успехе отмечает сообщение в БД; при ошибке планирует повтор.
-    """
     message_id = row.get("message_id")
     base_text = row.get("base_text")
 
     if not message_id or not base_text:
-        print(
-            f"⚠️ Telegram: у сигнала {game_id} нет message_id "
-            "или исходного текста. Повторить редактирование нельзя.",
-            flush=True,
-        )
+        print(f"⚠️ Telegram: у сигнала {game_id} нет message_id или исходного текста.", flush=True)
         return False
 
     if not result_text:
         result_text = row.get("telegram_result_text")
 
     if not result_text:
-        result_text = format_with_result(
-            base_text,
-            _build_result_line(row),
-        )
-
+        result_text = format_with_result(base_text, _build_result_line(row))
         try:
             db.save_live_telegram_result(game_id, result_text)
         except Exception as e:
-            print(
-                f"⚠️ Не удалось сохранить текст результата {game_id}: {e}",
-                flush=True,
-            )
+            print(f"⚠️ Не удалось сохранить текст результата {game_id}: {e}", flush=True)
 
     try:
-        edited = edit_telegram(
-            message_id,
-            result_text,
-        )
+        edited = edit_telegram(message_id, result_text)
     except Exception as e:
-        print(
-            f"❌ Ошибка редактирования Telegram для {game_id}: {e}",
-            flush=True,
-        )
+        print(f"❌ Ошибка редактирования Telegram для {game_id}: {e}", flush=True)
         edited = False
 
     if edited:
         try:
             db.mark_live_telegram_updated(game_id)
         except Exception as e:
-            print(
-                f"⚠️ Сообщение {game_id} изменено, "
-                f"но статус обновления не сохранён: {e}",
-                flush=True,
-            )
+            print(f"⚠️ Сообщение {game_id} изменено, но статус не сохранён: {e}", flush=True)
             try:
                 db.schedule_live_telegram_retry(game_id, 60)
             except Exception:
                 pass
-
         return True
 
     try:
@@ -726,97 +572,44 @@ def _edit_completed_signal(game_id, row, result_text=None):
     except (TypeError, ValueError):
         attempts = 0
 
-    # Увеличиваем интервал при многократных ошибках, чтобы
-    # не отправлять запросы в Telegram слишком часто.
     retry_delay = min(60 * (2 ** min(attempts, 4)), 900)
-
     try:
-        db.schedule_live_telegram_retry(
-            game_id,
-            delay=retry_delay,
-        )
+        db.schedule_live_telegram_retry(game_id, delay=retry_delay)
     except Exception as e:
-        print(
-            f"❌ Не удалось запланировать повтор Telegram {game_id}: {e}",
-            flush=True,
-        )
+        print(f"❌ Не удалось запланировать повтор Telegram {game_id}: {e}", flush=True)
 
-    print(
-        f"🔁 Telegram: обновление сигнала {game_id} не удалось. "
-        f"Повтор через {retry_delay} сек.",
-        flush=True,
-    )
-
+    print(f"🔁 Telegram: обновление {game_id} не удалось. Повтор через {retry_delay} сек.", flush=True)
     return False
 
 
 def retry_pending_telegram_updates():
-    """
-    Повторно редактирует сообщения завершённых сигналов,
-    если предыдущая попытка Telegram не удалась.
-    Вызывать из основного цикла main.py.
-    """
     try:
         rows = db.get_live_telegram_pending()
     except Exception as e:
-        print(
-            f"❌ Не удалось получить очередь обновлений Telegram: {e}",
-            flush=True,
-        )
+        print(f"❌ Не удалось получить очередь обновлений Telegram: {e}", flush=True)
         return
 
     if not rows:
         return
 
-    print(
-        f"🔁 Очередь Telegram: сообщений для обновления — {len(rows)}",
-        flush=True,
-    )
+    print(f"🔁 Очередь Telegram: сообщений для обновления — {len(rows)}", flush=True)
 
     for row in rows:
         game_id = str(row.get("game_id") or "").strip()
-
         if not game_id:
             continue
-
         try:
             result_text = row.get("telegram_result_text") or ""
-
             if not result_text:
-                result_text = format_with_result(
-                    row.get("base_text") or "",
-                    _build_result_line(row),
-                )
-
-                db.save_live_telegram_result(
-                    game_id,
-                    result_text,
-                )
-
-            _edit_completed_signal(
-                game_id,
-                row,
-                result_text=result_text,
-            )
-
+                result_text = format_with_result(row.get("base_text") or "", _build_result_line(row))
+                db.save_live_telegram_result(game_id, result_text)
+            _edit_completed_signal(game_id, row, result_text=result_text)
         except Exception as e:
-            print(
-                f"❌ Ошибка повторного обновления Telegram "
-                f"для сигнала {game_id}: {e}",
-                flush=True,
-            )
-
+            print(f"❌ Ошибка повторного обновления Telegram для {game_id}: {e}", flush=True)
             try:
-                db.schedule_live_telegram_retry(
-                    game_id,
-                    delay=300,
-                )
+                db.schedule_live_telegram_retry(game_id, delay=300)
             except Exception as db_error:
-                print(
-                    f"❌ Не удалось запланировать повтор "
-                    f"для {game_id}: {db_error}",
-                    flush=True,
-                )
+                print(f"❌ Не удалось запланировать повтор для {game_id}: {db_error}", flush=True)
 
 
 # ============================================================
@@ -824,27 +617,19 @@ def retry_pending_telegram_updates():
 # ============================================================
 
 def _finish_signal(key, info, won, score1, score2, now):
-    """Сохраняет результат в БД и обновляет сообщение Telegram."""
     final_score = f"{score1}-{score2}"
 
     if won:
-        elapsed = max(
-            0,
-            (now - int(info.get("signal_ts") or now)) // 60,
-        )
-
+        elapsed = max(0, (now - int(info.get("signal_ts") or now)) // 60)
         result_line = (
             "✅ <b>ЗАШЛО</b>\n"
             f"📊 Было: {info.get('old_s1', 0)}-"
-            f"{info.get('old_s2', 0)} "
-            f"({info.get('minute', 0)}')\n"
+            f"{info.get('old_s2', 0)} ({info.get('minute', 0)}')\n"
             f"📊 Стало: {final_score}\n"
             f"⏱ ~{elapsed} мин"
         )
-
         outcome = "hit"
         label = "ЗАШЛО"
-
     else:
         result_line = (
             "❌ <b>НЕ ЗАШЛО</b>\n"
@@ -853,58 +638,33 @@ def _finish_signal(key, info, won, score1, score2, now):
              "ℹ️ Гости не забили дополнительный гол." if info.get("market_type") == "individual_away" else
              "ℹ️ После сигнала новых голов не было.")
         )
-
         outcome = "miss"
         label = "НЕ ЗАШЛО"
 
     try:
-        saved = db.update_live_result(
-            str(key),
-            bool(won),
-            final_score=final_score,
-        )
+        saved = db.update_live_result(str(key), bool(won), final_score=final_score)
     except Exception as e:
         print(f"❌ Ошибка записи результата в БД: {e}", flush=True)
         saved = False
 
     if not saved:
-        print(
-            f"❌ База не подтвердила результат: "
-            f"{info.get('match')} ({key}); повторим проверку",
-            flush=True,
-        )
+        print(f"❌ База не подтвердила результат: {info.get('match')} ({key}); повторим проверку", flush=True)
         _schedule_retry(key, info, now)
         return False
 
-    # После подтверждения исхода обновляем обучающую выборку.
     try:
         labeled = ml.sync_confirmed_results() if info.get("market_type", "next_goal") == "next_goal" else 0
-
         if labeled:
-            print(
-                f"🧠 OLD ML: размечено новых результатов: {labeled}",
-                flush=True,
-            )
+            print(f"🧠 OLD ML: размечено новых результатов: {labeled}", flush=True)
     except Exception as e:
-        print(
-            f"⚠️ OLD ML: ошибка синхронизации результатов: {e}",
-            flush=True,
-        )
+        print(f"⚠️ OLD ML: ошибка синхронизации результатов: {e}", flush=True)
 
-    # Формируем и сохраняем готовый текст до попытки редактирования.
-    # Если Telegram недоступен, текст останется в БД для повтора.
-    result_text = format_with_result(
-        info.get("base_text") or "",
-        result_line,
-    )
+    result_text = format_with_result(info.get("base_text") or "", result_line)
 
     try:
         db.save_live_telegram_result(str(key), result_text)
     except Exception as e:
-        print(
-            f"⚠️ Не удалось сохранить текст результата {key}: {e}",
-            flush=True,
-        )
+        print(f"⚠️ Не удалось сохранить текст результата {key}: {e}", flush=True)
 
     try:
         row = {
@@ -924,25 +684,12 @@ def _finish_signal(key, info, won, score1, score2, now):
         }
 
         if info.get("message_id") and info.get("base_text"):
-            _edit_completed_signal(
-                str(key),
-                row,
-                result_text=result_text,
-            )
+            _edit_completed_signal(str(key), row, result_text=result_text)
         else:
-            print(
-                f"ℹ️ Сигнал {key}: нет message_id или base_text; "
-                "результат сохранён в базе, отредактировать сообщение нельзя",
-                flush=True,
-            )
+            print(f"ℹ️ Сигнал {key}: нет message_id или base_text; результат сохранён в базе", flush=True)
 
     except Exception as e:
-        print(
-            f"⚠️ Результат сохранён, но обновление Telegram "
-            f"не выполнено для {key}: {e}",
-            flush=True,
-        )
-
+        print(f"⚠️ Результат сохранён, но обновление Telegram не выполнено для {key}: {e}", flush=True)
         try:
             db.schedule_live_telegram_retry(str(key), delay=60)
         except Exception:
@@ -959,12 +706,7 @@ def _finish_signal(key, info, won, score1, score2, now):
         "final_score": final_score,
     })
 
-    print(
-        f"{'✅' if won else '❌'} {label}: "
-        f"{info.get('match')} | итог {final_score}",
-        flush=True,
-    )
-
+    print(f"{'✅' if won else '❌'} {label}: {info.get('match')} | итог {final_score}", flush=True)
     return True
 
 
@@ -973,7 +715,6 @@ def _finish_signal(key, info, won, score1, score2, now):
 # ============================================================
 
 def _has_new_goal(score1, score2, old_s1, old_s2, market_type="next_goal"):
-    """Проверяет гол по нужному рынку, а не просто изменение общего счёта."""
     if score1 is None or score2 is None:
         return False
     try:
@@ -987,36 +728,23 @@ def _has_new_goal(score1, score2, old_s1, old_s2, market_type="next_goal"):
 
 
 def _get_dates_to_check(info, now):
-    """Возвращает дату сигнала и соседние даты."""
     dates = []
     primary_date = info.get("date_str")
-
     if primary_date:
         dates.append(str(primary_date))
 
     try:
         signal_ts = int(info.get("signal_ts") or now)
-        signal_date = datetime.fromtimestamp(
-            signal_ts,
-            MOSCOW_TZ,
-        ).date()
-
+        signal_date = datetime.fromtimestamp(signal_ts, MOSCOW_TZ).date()
         for offset in (0, -1, 1):
-            candidate = (
-                signal_date + timedelta(days=offset)
-            ).strftime("%Y-%m-%d")
-
+            candidate = (signal_date + timedelta(days=offset)).strftime("%Y-%m-%d")
             if candidate not in dates:
                 dates.append(candidate)
-
     except Exception:
         pass
 
     if not dates:
-        dates.append(
-            datetime.now(MOSCOW_TZ).strftime("%Y-%m-%d")
-        )
-
+        dates.append(datetime.now(MOSCOW_TZ).strftime("%Y-%m-%d"))
     return dates
 
 
@@ -1036,23 +764,17 @@ def check_pending_results(pending_checks):
             check_after = int(info.get("check_after") or 0)
         except (TypeError, ValueError):
             check_after = 0
-
         if now >= check_after:
             due_keys.append(str(key))
 
     if not due_keys:
         return
 
-    print(
-        f"🔍 Проверка результатов: ожидают {len(due_keys)} матч(ей)",
-        flush=True,
-    )
-
+    print(f"🔍 Проверка результатов: ожидают {len(due_keys)} матч(ей)", flush=True)
     live_games = fetch_1xlite_live_games()
 
     for key in due_keys:
         info = pending_checks.get(key)
-
         if not info:
             continue
 
@@ -1062,10 +784,7 @@ def check_pending_results(pending_checks):
             old_s1 = int(info["old_s1"])
             old_s2 = int(info["old_s2"])
         except (KeyError, TypeError, ValueError):
-            print(
-                f"⚠️ {match_name}: нет корректного исходного счёта",
-                flush=True,
-            )
+            print(f"⚠️ {match_name}: нет корректного исходного счёта", flush=True)
             _schedule_retry(key, info, now)
             continue
 
@@ -1074,104 +793,51 @@ def check_pending_results(pending_checks):
         match_id = str(info.get("match_id") or key.split(":", 1)[0])
         live_game = find_1xlite_game(live_games, match_id)
 
-        # ----------------------------------------------------
         # 1. LIVE-ЛЕНТА 1XLITE
-        # ----------------------------------------------------
-
         if live_game is not None:
             score1, score2 = parse_1xlite_score(live_game)
             finished = is_1xlite_finished(live_game)
 
-            print(
-                f"📡 1xLite live: {match_name} | "
-                f"счёт={score1}-{score2} | "
-                f"завершён={finished}",
-                flush=True,
-            )
+            print(f"📡 1xLite live: {match_name} | счёт={score1}-{score2} | завершён={finished}", flush=True)
 
             if _has_new_goal(score1, score2, old_s1, old_s2, info.get("market_type", "next_goal")):
-                if _finish_signal(
-                    key, info, True, score1, score2, now
-                ):
+                if _finish_signal(key, info, True, score1, score2, now):
                     pending_checks.pop(key, None)
                 continue
 
-            if (
-                score1 is not None
-                and score2 is not None
-                and finished
-            ):
-                if _finish_signal(
-                    key, info, False, score1, score2, now
-                ):
+            if score1 is not None and score2 is not None and finished:
+                if _finish_signal(key, info, False, score1, score2, now):
                     pending_checks.pop(key, None)
                 continue
 
-        # ----------------------------------------------------
         # 2. ОТДЕЛЬНЫЙ ЗАПРОС МАТЧА ПО ID
-        # ----------------------------------------------------
-
-        if (
-            live_game is None
-            or score1 is None
-            or score2 is None
-            or not finished
-        ):
-            print(
-                f"🔎 GetGameZip: запрашиваем матч ID={match_id} "
-                f"({match_name})",
-                flush=True,
-            )
-
+        if live_game is None or score1 is None or score2 is None or not finished:
+            print(f"🔎 GetGameZip: запрашиваем матч ID={match_id} ({match_name})", flush=True)
             detailed_game = fetch_1xlite_game_by_id(match_id)
 
             if detailed_game is not None:
-                detail_s1, detail_s2 = parse_1xlite_score(
-                    detailed_game
-                )
-                detail_finished = is_1xlite_finished(
-                    detailed_game
-                )
-
+                detail_s1, detail_s2 = parse_1xlite_score(detailed_game)
+                detail_finished = is_1xlite_finished(detailed_game)
                 sc = detailed_game.get("SC") or {}
-                raw_status = (
-                    sc.get("I")
-                    if isinstance(sc, dict)
-                    else None
-                )
+                raw_status = sc.get("I") if isinstance(sc, dict) else None
 
-                print(
-                    f"📡 1xLite GetGameZip: {match_name} | "
-                    f"счёт={detail_s1}-{detail_s2} | "
-                    f"завершён={detail_finished} | "
-                    f"SC.I={raw_status!r}",
-                    flush=True,
-                )
+                print(f"📡 1xLite GetGameZip: {match_name} | счёт={detail_s1}-{detail_s2} | завершён={detail_finished} | SC.I={raw_status!r}", flush=True)
 
                 if detail_s1 is not None and detail_s2 is not None:
                     score1, score2 = detail_s1, detail_s2
                     finished = detail_finished
 
-                    if _has_new_goal(
-                        score1, score2, old_s1, old_s2, info.get("market_type", "next_goal")
-                    ):
-                        if _finish_signal(
-                            key, info, True, score1, score2, now
-                        ):
+                    if _has_new_goal(score1, score2, old_s1, old_s2, info.get("market_type", "next_goal")):
+                        if _finish_signal(key, info, True, score1, score2, now):
                             pending_checks.pop(key, None)
                         continue
 
                     if finished:
-                        if _finish_signal(
-                            key, info, False, score1, score2, now
-                        ):
+                        if _finish_signal(key, info, False, score1, score2, now):
                             pending_checks.pop(key, None)
                         continue
 
-        # ----------------------------------------------------
-        # 3. RUSCORE — РЕЗЕРВНЫЙ ИСТОЧНИК
-        # ----------------------------------------------------
-
+        # 3. RUSCORE
         team1 = str(info.get("team1") or "").strip()
         team2 = str(info.get("team2") or "").strip()
 
@@ -1183,10 +849,7 @@ def check_pending_results(pending_checks):
                 try:
                     events = fetch_ruscore_events(date_str)
                 except Exception as e:
-                    print(
-                        f"⚠️ Ошибка Ruscore ({date_str}): {e}",
-                        flush=True,
-                    )
+                    print(f"⚠️ Ошибка Ruscore ({date_str}): {e}", flush=True)
                     continue
 
                 if not events:
@@ -1195,10 +858,7 @@ def check_pending_results(pending_checks):
                 try:
                     candidate = find_match(events, team1, team2)
                 except Exception as e:
-                    print(
-                        f"⚠️ Ошибка поиска Ruscore: {e}",
-                        flush=True,
-                    )
+                    print(f"⚠️ Ошибка поиска Ruscore: {e}", flush=True)
                     candidate = None
 
                 if candidate:
@@ -1208,29 +868,15 @@ def check_pending_results(pending_checks):
 
             if event:
                 try:
-                    r_score1, r_score2 = parse_score_for_match(
-                        event,
-                        team1,
-                        team2,
-                    )
+                    r_score1, r_score2 = parse_score_for_match(event, team1, team2)
                 except Exception as e:
-                    print(
-                        f"⚠️ Ошибка разбора счёта Ruscore: {e}",
-                        flush=True,
-                    )
+                    print(f"⚠️ Ошибка разбора счёта Ruscore: {e}", flush=True)
                     r_score1 = r_score2 = None
 
                 status_text = get_ruscore_status(event)
                 r_finished = is_finished_status(status_text)
 
-                print(
-                    f"📋 Ruscore: {match_name} | "
-                    f"дата={event_date} | "
-                    f"счёт={r_score1}-{r_score2} | "
-                    f"статус={status_text!r} | "
-                    f"завершён={r_finished}",
-                    flush=True,
-                )
+                print(f"📋 Ruscore: {match_name} | дата={event_date} | счёт={r_score1}-{r_score2} | статус={status_text!r} | завершён={r_finished}", flush=True)
 
                 try:
                     if r_score1 is not None and r_score2 is not None:
@@ -1239,49 +885,23 @@ def check_pending_results(pending_checks):
                 except (TypeError, ValueError):
                     r_score1 = r_score2 = None
 
-                if _has_new_goal(
-                    r_score1, r_score2, old_s1, old_s2, info.get("market_type", "next_goal")
-                ):
-                    if _finish_signal(
-                        key, info, True, r_score1, r_score2, now
-                    ):
+                if _has_new_goal(r_score1, r_score2, old_s1, old_s2, info.get("market_type", "next_goal")):
+                    if _finish_signal(key, info, True, r_score1, r_score2, now):
                         pending_checks.pop(key, None)
                     continue
 
-                if (
-                    r_score1 is not None
-                    and r_score2 is not None
-                    and r_finished
-                ):
-                    if _finish_signal(
-                        key, info, False, r_score1, r_score2, now
-                    ):
+                if r_score1 is not None and r_score2 is not None and r_finished:
+                    if _finish_signal(key, info, False, r_score1, r_score2, now):
                         pending_checks.pop(key, None)
                     continue
 
             else:
-                print(
-                    f"🔎 Матч не найден в Ruscore: {match_name}",
-                    flush=True,
-                )
+                print(f"🔎 Матч не найден в Ruscore: {match_name}", flush=True)
 
         else:
-            print(
-                f"⚠️ {match_name}: нет названий обеих команд "
-                "для поиска в Ruscore",
-                flush=True,
-            )
+            print(f"⚠️ {match_name}: нет названий обеих команд для поиска в Ruscore", flush=True)
 
-        # ----------------------------------------------------
-        # 4. ИСХОД НЕ ПОДТВЕРЖДЁН
-        # ----------------------------------------------------
-
-        print(
-            f"⏳ Ожидание: {match_name}. "
-            "Исход пока не подтверждён; будет повторная проверка.",
-            flush=True,
-        )
-
+        print(f"⏳ Ожидание: {match_name}. Исход пока не подтверждён; будет повторная проверка.", flush=True)
         _schedule_retry(key, info, now)
 
 
@@ -1330,9 +950,7 @@ def format_signal_multi(p, strategies, odd):
 # ОТПРАВКА СИГНАЛА
 # ============================================================
 
-def try_send_signal(
-    p, strategy, now_ts, p_game_cache, sent_signals, pending_checks
-):
+def try_send_signal(p, strategy, now_ts, p_game_cache, sent_signals, pending_checks):
     gid = p["game_id"]
     market_type = strategy.get("market_type", "next_goal")
     match_id = str(gid)
@@ -1347,20 +965,17 @@ def try_send_signal(
         side = "home" if market_type == "individual_home" else "away"
         target = float(strategy.get("target_total", (p["s1"] if side == "home" else p["s2"]) + 0.5))
         
-        # 1. Ищем в кэше
         odd = get_odd_individual_total(game, side=side, target=target)
         
-        # 2. Если нет — запрашиваем расширенный API
         if odd is None:
             print(f"🔄 ИТ не найден в live, запрашиваем GetGameZip для ID={gid}...", flush=True)
             detailed_game = fetch_1xlite_game_by_id(gid)
             if detailed_game:
                 odd = get_odd_individual_total(detailed_game, side=side, target=target)
                 
-        # 3. Отладка
         if odd is None:
             print(f"🔍 ОТЛАДКА ИТ: Кэф для {side} на тотал {target} не найден.", flush=True)
-            if detailed_game:
+            if 'detailed_game' in locals() and detailed_game:
                 found = False
                 for item in (detailed_game.get("events") or []):
                     if isinstance(item, dict) and item.get("type") in (9, 10, 11):
@@ -1372,10 +987,7 @@ def try_send_signal(
         odd = get_odd_total(game, p["s1"] + p["s2"])
 
     if odd is None:
-        print(
-            f"⚠️ Нет коэффициента для {p['match']}; сигнал не отправлен",
-            flush=True,
-        )
+        print(f"⚠️ Нет коэффициента для {p['match']}; сигнал не отправлен", flush=True)
         return False
 
     try:
@@ -1387,11 +999,8 @@ def try_send_signal(
         print(f"⚠️ Кэф {odd:.2f} меньше минимального {strategy['min_odd']} для {p['match']}", flush=True)
         return False
 
-    text = format_signal_multi(
-        p,
-        [f"{strategy['emoji']} {strategy['strategy']}"],
-        odd,
-    )
+    text = format_signal_multi(p, [f"{strategy['emoji']} {strategy['strategy']}"], odd)
+    
     if market_type in ("individual_home", "individual_away"):
         side_name = "хозяев" if market_type == "individual_home" else "гостей"
         target_line = strategy.get("target_total")
@@ -1406,10 +1015,7 @@ def try_send_signal(
         return False
 
     if not msg_id:
-        print(
-            f"⚠️ Telegram не подтвердил отправку: {p['match']}",
-            flush=True,
-        )
+        print(f"⚠️ Telegram не подтвердил отправку: {p['match']}", flush=True)
         return False
 
     today = datetime.now(MOSCOW_TZ).strftime("%Y-%m-%d")
@@ -1443,15 +1049,9 @@ def try_send_signal(
     saved = db.save_live_signal(signal_data)
 
     if not saved:
-        print(
-            f"❌ Не удалось сохранить сигнал в БД: "
-            f"{p['match']} ({key}). "
-            "Автоматическая проверка может не восстановиться.",
-            flush=True,
-        )
+        print(f"❌ Не удалось сохранить сигнал в БД: {p['match']} ({key}).", flush=True)
         return False
 
-    # OLD ML
     try:
         ml_saved = False
         if market_type == "next_goal":
@@ -1501,11 +1101,6 @@ def try_send_signal(
         "score_at_signal": p["score"],
     })
 
-    print(
-        f"📤 СИГНАЛ: {p['match']} | {strategy['strategy']} | "
-        f"кэф {odd:.2f}; первая проверка через "
-        f"{CHECK_FIRST_AFTER} сек.",
-        flush=True,
-    )
+    print(f"📤 СИГНАЛ: {p['match']} | {strategy['strategy']} | кэф {odd:.2f}; первая проверка через {CHECK_FIRST_AFTER} сек.", flush=True)
 
     return True
