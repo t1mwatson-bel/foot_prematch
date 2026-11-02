@@ -1308,17 +1308,17 @@ def try_send_signal(
         side = "home" if market_type == "individual_home" else "away"
         target = float(strategy.get("target_total", (p["s1"] if side == "home" else p["s2"]) + 0.5))
         
-        # 1. Ищем в кэше live-ленты (быстро)
+        # 1. Ищем в кэше
         odd = get_odd_individual_total(game, side=side, target=target)
         
-        # 2. Если нет — запрашиваем расширенный API по ID матча
+        # 2. Если нет — запрашиваем расширенный API
         if odd is None:
             print(f"🔄 ИТ не найден в live, запрашиваем GetGameZip для ID={gid}...", flush=True)
             detailed_game = fetch_1xlite_game_by_id(gid)
             if detailed_game:
                 odd = get_odd_individual_total(detailed_game, side=side, target=target)
                 
-        # 3. Если всё равно нет — отладка
+        # 3. Отладка
         if odd is None:
             print(f"🔍 ОТЛАДКА ИТ: Кэф для {side} на тотал {target} не найден.", flush=True)
             if detailed_game:
@@ -1329,29 +1329,6 @@ def try_send_signal(
                         print(f"  - В API есть: type={item.get('type')}, param={item.get('parameter')}, cf={item.get('cf')}", flush=True)
                 if not found:
                     print("  - В блоке events вообще нет тоталов (type=9/10/11).", flush=True)
-        
-        # ====================================================
-        # ОТЛАДКА: Если кэф не найден, выводим всё, что есть в API
-        # ====================================================
-        if odd is None:
-            print(f"\n🔍 ОТЛАДКА ИТ: Не найден кэф для {side} на тотал {target}.", flush=True)
-            print(f"   Матч: {p['match']}, Счёт: {p['score']}", flush=True)
-            found_any = False
-            for grp in (game.get("centralBlockEventGroups") or []):
-                if not isinstance(grp, dict):
-                    continue
-                for ev_list in (grp.get("events") or []):
-                    if not isinstance(ev_list, list):
-                        continue
-                    for item in ev_list:
-                        if isinstance(item, dict) and item.get("T") in (9, 10, 11):
-                            found_any = True
-                            print(f"   - Доступен: T={item.get('T')} P={item.get('P')} C={item.get('C')}", flush=True)
-            if not found_any:
-                print("   - В API вообще нет блоков с T=9/10/11 (группа тоталов пуста или скрыта)", flush=True)
-            print("-" * 50, flush=True)
-        # ====================================================
-
     else:
         odd = get_odd_total(game, p["s1"] + p["s2"])
 
