@@ -1318,6 +1318,29 @@ def try_send_signal(
         side = "home" if market_type == "individual_home" else "away"
         target = float(strategy.get("target_total", (p["s1"] if side == "home" else p["s2"]) + 0.5))
         odd = get_odd_individual_total(game, side=side, target=target)
+        
+        # ====================================================
+        # ОТЛАДКА: Если кэф не найден, выводим всё, что есть в API
+        # ====================================================
+        if odd is None:
+            print(f"\n🔍 ОТЛАДКА ИТ: Не найден кэф для {side} на тотал {target}.", flush=True)
+            print(f"   Матч: {p['match']}, Счёт: {p['score']}", flush=True)
+            found_any = False
+            for grp in (game.get("centralBlockEventGroups") or []):
+                if not isinstance(grp, dict):
+                    continue
+                for ev_list in (grp.get("events") or []):
+                    if not isinstance(ev_list, list):
+                        continue
+                    for item in ev_list:
+                        if isinstance(item, dict) and item.get("T") in (9, 10, 11):
+                            found_any = True
+                            print(f"   - Доступен: T={item.get('T')} P={item.get('P')} C={item.get('C')}", flush=True)
+            if not found_any:
+                print("   - В API вообще нет блоков с T=9/10/11 (группа тоталов пуста или скрыта)", flush=True)
+            print("-" * 50, flush=True)
+        # ====================================================
+
     else:
         odd = get_odd_total(game, p["s1"] + p["s2"])
 
@@ -1334,6 +1357,7 @@ def try_send_signal(
         return False
 
     if odd < strategy["min_odd"]:
+        print(f"⚠️ Кэф {odd:.2f} меньше минимального {strategy['min_odd']} для {p['match']}", flush=True)
         return False
 
     text = format_signal_multi(
@@ -1399,6 +1423,76 @@ def try_send_signal(
             flush=True,
         )
         return False
+
+    # ========================================================
+    # OLD ML — СОХРАНЕНИЕ ПРИЗНАКОВ (добавлено из полной версии)
+    # ========================================================
+    try:
+        ml_saved = False
+        if market_type == "next_goal":
+            ml_saved = ml.observe(p, strategy, odds=odd)
+
+        if ml_saved:
+            print(
+                f"🧠 OLD ML: признаки сохранены | "
+                f"{p['match']} | {strategy['strategy']} | "
+                f"кэф {odd:.2f}",
+                flush=True,
+            )
+    except Exception as e:
+        print(
+            f"⚠️ OLD ML: не удалось сохранить признаки: {e}",
+            flush=True,
+        )
+
+    sent_signals[key] = {
+        "ts": now_ts,
+        "message_id": msg_id,
+        "base_text": text,
+        "strategies": [f"{strategy['emoji']} {strategy['strategy']}"],
+        "last_p": p,
+    }
+
+    pending_checks[key] = {
+        "team1": p["team1"],
+        "match_id": match_id,
+        "market_type": market_type,
+        "team2": p["team2"],
+        "match": p["match"],
+        "date_str": today,
+        "old_s1": int(p["s1"]),
+        "old_s2": int(p["s2"]),
+        "minute": int(p["minute"]),
+        "signal_ts": now_ts,
+        "message_id": msg_id,
+        "base_text": text,
+        "strategy": strategy["strategy"],
+        "odd": odd,
+        "check_after": check_after,
+        "attempts": 0,
+    }
+
+    persist_check(key, pending_checks[key])
+
+    log_result_record({
+        "record_type": "signal",
+        "game_id": key,
+        "timestamp": now_ts,
+        "match": p["match"],
+        "league": p["league"],
+        "strategy": strategy["strategy"],
+        "odd": odd,
+        "score_at_signal": p["score"],
+    })
+
+    print(
+        f"📤 СИГНАЛ: {p['match']} | {strategy['strategy']} | "
+        f"кэф {odd:.2f}; первая проверка через "
+        f"{CHECK_FIRST_AFTER} сек.",
+        flush=True,
+    )
+
+    return True
 
     # ========================================================
     # OLD ML — СОХРАНЕНИЕ ПРИЗНАКОВ
