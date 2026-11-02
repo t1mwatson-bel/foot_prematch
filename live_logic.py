@@ -141,14 +141,14 @@ def fetch_1xlite_game_by_id(game_id):
 
 
 def get_odd_individual_total(game, side="home", target=0.5):
-    """Получает коэффициент ИТБ нужной команды на заданную линию."""
+    """Ищет кэф на ИТ в любом формате API (GetGameZip или topGamesByStat)."""
     wanted_type = 10 if side == "home" else 11
     try:
         target = float(target)
     except (TypeError, ValueError):
         return None
 
-    # 1. Ищем в centralBlockEventGroups (старый GetGameZip)
+    # 1. Проверяем centralBlockEventGroups (старый формат)
     for group in (game.get("centralBlockEventGroups") or []):
         if not isinstance(group, dict):
             continue
@@ -167,7 +167,7 @@ def get_odd_individual_total(game, side="home", target=0.5):
                 if item_type == wanted_type and abs(parameter - target) < 0.001 and odd > 1:
                     return odd
 
-    # 2. Ищем в events (новый topGamesByStat / gameInfo)
+    # 2. Проверяем events (новый формат topGamesByStat)
     for item in (game.get("events") or []):
         if not isinstance(item, dict):
             continue
