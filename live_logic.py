@@ -214,51 +214,6 @@ def _parse_score_value(value):
     return None, None
 
 
-def parse_1xlite_score(game):
-    """Разбирает счёт из известных вариантов ответа 1xLite."""
-    if not isinstance(game, dict):
-        return None, None
-
-    scores = game.get("scores") or {}
-
-    if isinstance(scores, dict):
-        for key in ("fullScore", "score", "currentScore", "result"):
-            s1, s2 = _parse_score_value(scores.get(key))
-            if s1 is not None and s2 is not None:
-                return s1, s2
-
-        s1, s2 = _parse_score_value(scores)
-        if s1 is not None and s2 is not None:
-            return s1, s2
-
-    sc = game.get("SC") or {}
-
-    if isinstance(sc, dict):
-        fs = sc.get("FS") or {}
-
-        if isinstance(fs, dict):
-            try:
-                s1 = fs.get("S1")
-                s2 = fs.get("S2")
-
-                if s1 is not None and s2 is not None:
-                    return int(s1), int(s2)
-            except (TypeError, ValueError):
-                pass
-
-        for key in ("FS", "S", "score", "Score"):
-            s1, s2 = _parse_score_value(sc.get(key))
-            if s1 is not None and s2 is not None:
-                return s1, s2
-
-    for key in ("fullScore", "score", "Score", "result"):
-        s1, s2 = _parse_score_value(game.get(key))
-        if s1 is not None and s2 is not None:
-            return s1, s2
-
-    return None, None
-
-
 def find_1xlite_game(games, game_id):
     """Ищет матч по точному ID."""
     if not games:
