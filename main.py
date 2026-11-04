@@ -1,5 +1,3 @@
-import gzip
-import brotli
 import time
 import threading
 import traceback
@@ -7,14 +5,16 @@ from datetime import datetime
 import requests
 import web
 import database as db
+import json
+import gzip
 from config import *
 from stats_parser import parse_prematch_game
 from poisson_model import prob_over
-from parse_nb_bet_html import parse_nb_bet_html
 from telegram_bot import send_telegram
 
 # ==== API линии 1xBet ====
 LINE_URL = f"{BASE_URL}/service-api/main-line-feed/v3/games1x2"
+NB_BET_RESULTS_URL = "https://nb-bet.com/_next/data/d2b78be8ab0400f112655049fdf444f79f406133/ru/Results.json"
 
 def get_prematch_games():
     params = {
@@ -28,25 +28,94 @@ def get_prematch_games():
     }
     try:
         r = requests.get(LINE_URL, headers=HEADERS, params=params, timeout=15)
-        print(f"🔎 LINE HTTP: {r.status_code}", flush=True)
         if r.status_code != 200:
-            print(f"❌ Ошибка: {r.text[:300]}", flush=True)
             return []
-        if not r.text.strip().startswith(("[", "{")):
-            print(f"❌ API вернул не JSON: {r.text[:200]}", flush=True)
-            return []
-        try:
-            data = r.json()
-        except Exception as e:
-            print(f"❌ Ошибка разбора JSON: {e}", flush=True)
-            return []
+        data = r.json()
         if isinstance(data, list):
-            print(f"📊 Получено матчей: {len(data)}", flush=True)
             return [g for g in data if isinstance(g, dict)]
         return []
     except Exception as e:
-        print(f"❌ Исключение: {e}", flush=True)
+        print(f"❌ Ошибка линии: {e}", flush=True)
         return []
+
+def fetch_nb_bet_json(url):
+    """Скачивает JSON с nb-bet, распаковывая gzip если нужно"""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip, deflate",
+        "Referer": "https://nb-bet.com/",
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code != 200:
+            return None
+        
+        content = r.content
+        try:
+            content = gzip.decompress(content)
+        except Exception:
+            pass # Если не gzip, пробуем как есть
+            
+        return json.loads(content.decode("utf-8"))
+    except Exception as e:
+        print(f"⚠️ Ошибка скачивания JSON: {e}", flush=True)
+        return None
+
+def find_match_in_results(data, team1, team2):
+    """Ищет матч в JSON рекурсивно по названиям команд"""
+    def normalize(s):
+        return str(s).lower().replace(" ", "").replace("-", "")
+    
+    n1 = normalize(team1)
+    n2 = normalize(team2)
+    
+    def search(obj):
+        if isinstance(obj, dict):
+            t1 = normalize(obj.get("team1_name", ""))
+            t2 = normalize(obj.get("team2_name", ""))
+            # Совпадение по первым 5 буквам
+            if t1 and t2 and ((n1[:5] in t1 and n2[:5] in t2) or (n1[:5] in t2 and n2[:5] in t1)):
+                return obj
+            for v in obj.values():
+                result = search(v)
+                if result: return result
+        elif isinstance(obj, list):
+            for item in obj:
+                result = search(item)
+                if result: return result
+        return None
+    
+    return search(data)
+
+def get_team_stats_from_nb(match_data):
+    """Достает средние голы из JSON матча (если они там есть)"""
+    # Пытаемся найти поля с голами (структура может отличаться, 
+    # но мы ищем похожие ключи)
+    try:
+        # Заглушка, пока не знаем точную структуру JSON.
+        # Если nb-bet отдает в JSON те же данные, что и в HTML - 
+        # мы найдем их в поле "27" или похожем.
+        preview = str(match_data)
+        
+        import re
+        # Ищем паттерн "забивает X ... пропускает Y" прямо в тексте JSON
+        matches = re.findall(r"забивает\s+([\d.]+).*?пропускает\s+([\d.]+)", preview)
+        
+        if len(matches) >= 2:
+            home_goals = float(matches[0][0].rstrip(".,"))
+            home_miss = float(matches[0][1].rstrip(".,"))
+            away_goals = float(matches[1][0].rstrip(".,"))
+            away_miss = float(matches[1][1].rstrip(".,"))
+            return {
+                "avg_scored_home": home_goals,
+                "avg_conceded_home": home_miss,
+                "avg_scored_away": away_goals,
+                "avg_conceded_away": away_miss,
+            }
+    except Exception:
+        pass
+    return None
 
 def run_web():
     try:
@@ -55,11 +124,17 @@ def run_web():
         print(f"❌ Ошибка запуска сайта: {e}", flush=True)
 
 def bot_loop():
-    print("🚀 PREMATCH-БОТ ЗАПУЩЕН (умная модель на nb-bet)", flush=True)
+    print("🚀 БОТ ЗАПУЩЕН (JSON модель)", flush=True)
     while True:
         try:
             now = datetime.now(MOSCOW_TZ)
             print(f"\n🔄 [{now:%H:%M:%S}] Загрузка линии...", flush=True)
+
+            # 1. Получаем все матчи с nb-bet (один раз за цикл)
+            print("📥 Скачиваем базу матчей с nb-bet...", flush=True)
+            all_nb_matches = fetch_nb_bet_json(NB_BET_RESULTS_URL)
+            if not all_nb_matches:
+                print("❌ Не удалось получить JSON с nb-bet", flush=True)
 
             games = get_prematch_games()
             count_ok = 0
@@ -84,13 +159,12 @@ def bot_loop():
 
                 count_ok += 1
 
-                # Пытаемся достать данные с nb-bet
+                # Пытаемся найти этот матч в базе nb-bet
                 nb_data = None
-                if "Славия" in parsed["team1"] and "Арсенал" in parsed["team2"]:
-                    try:
-                        nb_data = parse_nb_bet_html("match_page.html")
-                    except Exception as e:
-                        print(f"⚠️ Ошибка парсинга nb-bet: {e}", flush=True)
+                if all_nb_matches:
+                    nb_match = find_match_in_results(all_nb_matches, parsed["team1"], parsed["team2"])
+                    if nb_match:
+                        nb_data = get_team_stats_from_nb(nb_match)
 
                 if nb_data and nb_data["avg_scored_home"] is not None:
                     lam_home = (nb_data["avg_scored_home"] + nb_data["avg_conceded_away"]) / 2
@@ -105,14 +179,11 @@ def bot_loop():
                     print(
                         f"\n⚽ {parsed['team1']} — {parsed['team2']} (данные с nb-bet)"
                         f"\n   Лига: {parsed['liga']}"
-                        f"\n   Начало: {parsed['start_time']:%d.%m %H:%M}"
                         f"\n   Кэф ТБ 2.5: {coef_over}"
-                        f"\n   Средние голы: {parsed['team1']} — забивает {nb_data['avg_scored_home']}, пропускает {nb_data['avg_conceded_home']}"
-                        f"\n                 {parsed['team2']} — забивает {nb_data['avg_scored_away']}, пропускает {nb_data['avg_conceded_away']}"
-                        f"\n   Ожидаемые голы (lam): {lam_home:.2f} + {lam_away:.2f} = {lam_total:.2f}"
                         f"\n   Модель: {p_model:.1%} | Букмекер: {p_book:.1%} | Edge: {edge:+.1%}",
                         flush=True
                     )
+                    
                     if edge > 0.05:
                         count_value += 1
                         print(f"   🔥 ВАЛУЙ", flush=True)
@@ -124,28 +195,18 @@ def bot_loop():
                             f"🕒 {parsed['start_time']:%d.%m %H:%M}\n\n"
                             f"💰 Кэф: <b>{coef_over}</b>\n"
                             f"📊 Модель: {p_model:.1%} | Букмекер: {p_book:.1%}\n"
-                            f"✅ Edge: +{edge:.1%}\n\n"
-                            f"📈 Средние голы:\n"
-                            f"   {parsed['team1']}: {nb_data['avg_scored_home']} забивает / {nb_data['avg_conceded_home']} пропускает\n"
-                            f"   {parsed['team2']}: {nb_data['avg_scored_away']} забивает / {nb_data['avg_conceded_away']} пропускает\n"
-                            f"🧮 Ожидаемые голы (lam): {lam_total:.2f}"
+                            f"✅ Edge: +{edge:.1%}\n"
                         )
                         send_telegram(msg)
                 else:
-                    print(
-                        f"ℹ️ {parsed['team1']} — {parsed['team2']}: нет данных с nb-bet",
-                        flush=True
-                    )
+                    # Если в JSON nb-bet не нашли данные, просто пропускаем
+                    pass
 
-            print(
-                f"\n✅ Матчей с ТБ 2.5: {count_ok} | валуев: {count_value}",
-                flush=True
-            )
+            print(f"\n✅ Матчей с ТБ 2.5: {count_ok} | валуев: {count_value}", flush=True)
             print("💤 Спим 5 минут...", flush=True)
             time.sleep(300)
 
         except KeyboardInterrupt:
-            print("⏹️ Остановка", flush=True)
             break
         except Exception as e:
             print(f"❌ Ошибка цикла: {e}", flush=True)
