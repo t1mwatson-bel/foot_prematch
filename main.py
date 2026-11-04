@@ -1,4 +1,3 @@
-from poisson_model import prob_over, estimate_total_goals
 import time
 import threading
 import traceback
@@ -8,6 +7,8 @@ import web
 import database as db
 from config import *
 from stats_parser import parse_prematch_game
+from poisson_model import prob_over
+from parse_nb_bet_html import parse_nb_bet_html
 
 # Тестовый эндпоинт линии (тот, что ты скинул)
 LINE_URL = f"{BASE_URL}/service-api/main-line-feed/v3/games1x2"
