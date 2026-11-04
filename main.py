@@ -4,6 +4,7 @@ import traceback
 from datetime import datetime, timedelta
 import requests
 import web
+from nbbet_stats import get_match_data
 import database as db
 from config import *
 from telegram_bot import send_telegram
