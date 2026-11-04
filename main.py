@@ -1,3 +1,4 @@
+from poisson_model import prob_over, estimate_total_goals
 import time
 import threading
 import traceback
@@ -80,7 +81,7 @@ def bot_loop():
             time.sleep(60)
 
 def bot_loop():
-    print("🚀 PREMATCH-БОТ ЗАПУЩЕН (тест линии)", flush=True)
+    print("🚀 PREMATCH-БОТ ЗАПУЩЕН (тест линии + модель)", flush=True)
     while True:
         try:
             now = datetime.now(MOSCOW_TZ)
@@ -89,6 +90,7 @@ def bot_loop():
             games = get_prematch_games()
             count_ok = 0
             count_skipped = 0
+            count_value = 0
 
             for game in games:
                 parsed = parse_prematch_game(game)
@@ -98,36 +100,46 @@ def bot_loop():
                 t1 = parsed["team1"].lower().strip()
                 t2 = parsed["team2"].lower().strip()
 
-                # --- ФИЛЬТР 1: отсекаем "специальные" и сборные ставки ---
-                skip_words = (
-                    "специальное", "специальные",
-                    "хозяева", "гости",
-                    "home", "away",
-                    "хозяева (", "гости (",
-                )
+                # ФИЛЬТР 1: специальные/сборные ставки
+                skip_words = ("специальное", "специальные", "хозяева", "гости", "home", "away")
                 if any(w in t1 or w in t2 for w in skip_words):
                     count_skipped += 1
                     continue
 
-                # --- ФИЛЬТР 2: нужен тотал ровно 2.5 ---
+                # ФИЛЬТР 2: нужен тотал ровно 2.5
                 tb_25 = parsed["odds"]["TB"].get(2.5)
                 if not tb_25 or not tb_25.get("over") or not tb_25.get("under"):
                     count_skipped += 1
                     continue
 
                 count_ok += 1
-                print(
-                    f"\n⚽ {parsed['sport']}: {parsed['team1']} — {parsed['team2']}"
+                coef_over = tb_25["over"]
+
+                # --- Poisson-модель ---
+                lam = estimate_total_goals(parsed["liga"])
+                p_model = prob_over(2.5, lam)   # вероятность ТБ 2.5 по модели
+                p_book = 1 / coef_over          # вероятность по кэфу букмекера
+                edge = p_model - p_book
+
+                base_info = (
+                    f"\n⚽ {parsed['team1']} — {parsed['team2']}"
                     f"\n   Лига: {parsed['liga']}"
                     f"\n   Начало: {parsed['start_time']:%d.%m %H:%M}"
-                    f"\n   1X2: {parsed['odds']['1']} / {parsed['odds']['X']} / {parsed['odds']['2']}"
-                    f"\n   ОЗ: да {parsed['odds']['OZ_Yes']} / нет {parsed['odds']['OZ_No']}"
-                    f"\n   ТБ 2.5: {tb_25['over']} / ТМ 2.5: {tb_25['under']}"
+                    f"\n   Кэф ТБ 2.5: {coef_over}"
+                    f"\n   Модель: {p_model:.1%} | Букмекер: {p_book:.1%} | Edge: {edge:+.1%}"
                 )
 
+                if edge > 0.05:
+                    count_value += 1
+                    print(f"\n🔥 ВАЛУЙ{base_info}", flush=True)
+                    # Сюда позже добавим send_to_telegram(...)
+                else:
+                    print(f"   ℹ️ {base_info}", flush=True)
+
             print(
-                f"\n✅ Отобрано с тоталом 2.5: {count_ok} | "
-                f"отсеяно: {count_skipped}",
+                f"\n✅ Матчей с ТБ 2.5: {count_ok} | "
+                f"отсеяно: {count_skipped} | "
+                f"валуев: {count_value}",
                 flush=True,
             )
             print("💤 Спим 5 минут...", flush=True)
