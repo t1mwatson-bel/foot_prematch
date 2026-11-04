@@ -79,6 +79,68 @@ def bot_loop():
             traceback.print_exc()
             time.sleep(60)
 
+def bot_loop():
+    print("🚀 PREMATCH-БОТ ЗАПУЩЕН (тест линии)", flush=True)
+    while True:
+        try:
+            now = datetime.now(MOSCOW_TZ)
+            print(f"\n🔄 [{now:%H:%M:%S}] Загрузка линии...", flush=True)
+
+            games = get_prematch_games()
+            count_ok = 0
+            count_skipped = 0
+
+            for game in games:
+                parsed = parse_prematch_game(game)
+                if not parsed:
+                    continue
+
+                t1 = parsed["team1"].lower().strip()
+                t2 = parsed["team2"].lower().strip()
+
+                # --- ФИЛЬТР 1: отсекаем "специальные" и сборные ставки ---
+                skip_words = (
+                    "специальное", "специальные",
+                    "хозяева", "гости",
+                    "home", "away",
+                    "хозяева (", "гости (",
+                )
+                if any(w in t1 or w in t2 for w in skip_words):
+                    count_skipped += 1
+                    continue
+
+                # --- ФИЛЬТР 2: нужен тотал ровно 2.5 ---
+                tb_25 = parsed["odds"]["TB"].get(2.5)
+                if not tb_25 or not tb_25.get("over") or not tb_25.get("under"):
+                    count_skipped += 1
+                    continue
+
+                count_ok += 1
+                print(
+                    f"\n⚽ {parsed['sport']}: {parsed['team1']} — {parsed['team2']}"
+                    f"\n   Лига: {parsed['liga']}"
+                    f"\n   Начало: {parsed['start_time']:%d.%m %H:%M}"
+                    f"\n   1X2: {parsed['odds']['1']} / {parsed['odds']['X']} / {parsed['odds']['2']}"
+                    f"\n   ОЗ: да {parsed['odds']['OZ_Yes']} / нет {parsed['odds']['OZ_No']}"
+                    f"\n   ТБ 2.5: {tb_25['over']} / ТМ 2.5: {tb_25['under']}"
+                )
+
+            print(
+                f"\n✅ Отобрано с тоталом 2.5: {count_ok} | "
+                f"отсеяно: {count_skipped}",
+                flush=True,
+            )
+            print("💤 Спим 5 минут...", flush=True)
+            time.sleep(300)
+
+        except KeyboardInterrupt:
+            print("⏹️ Остановка", flush=True)
+            break
+        except Exception as e:
+            print(f"❌ Ошибка цикла: {e}", flush=True)
+            traceback.print_exc()
+            time.sleep(60)
+
 if __name__ == "__main__":
     threading.Thread(target=run_web, daemon=True).start()
     bot_loop()
