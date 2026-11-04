@@ -2,13 +2,14 @@ import time
 import threading
 import traceback
 from datetime import datetime, timedelta
+from math import exp, factorial
 import requests
 import web
 from nbbet_stats import get_match_data
 import database as db
 from config import *
 from telegram_bot import send_telegram
-from ruscore import fetch_ruscore_events # Импортируем Ruscore
+from ruscore import fetch_ruscore_events
 
 # ==== API линии 1xBet ====
 LINE_URL = f"{BASE_URL}/service-api/main-line-feed/v3/games1x2"
@@ -59,8 +60,14 @@ def parse_prematch_game(game):
         }
     except: return None
 
+def poisson_prob(k, lam):
+    return (lam ** k) * exp(-lam) / factorial(k)
+
+def prob_over(total, lam):
+    p_under = sum(poisson_prob(k, lam) for k in range(int(total) + 1))
+    return 1 - p_under
+
 def save_ruscore_results():
-    """Раз в день тянет вчерашние результаты из Ruscore и сохраняет в БД."""
     print("📥 Накопление истории (Ruscore)...", flush=True)
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     try:
@@ -71,13 +78,11 @@ def save_ruscore_results():
             away = ev.get("away", {}).get("name")
             score = ev.get("score", [])
             if not home or not away or not score: continue
-            
             h_score, a_score = None, None
             for s in score:
                 if s.get("type") == "overall":
                     h_score, a_score = s.get("home"), s.get("away")
                     break
-            
             if h_score is not None and a_score is not None:
                 db.save_match_result(home, away, int(h_score), int(a_score), yesterday)
                 count += 1
@@ -90,7 +95,7 @@ def run_web():
     except Exception as e: print(f"❌ Ошибка сайта: {e}", flush=True)
 
 def bot_loop():
-    print("🚀 ГИБРИДНЫЙ БОТ ЗАПУЩЕН", flush=True)
+    print("🚀 УМНЫЙ БОТ ЗАПУЩЕН (xG из nb-bet)", flush=True)
     last_save_date = None
     
     while True:
@@ -98,13 +103,12 @@ def bot_loop():
             now = datetime.now(MOSCOW_TZ)
             print(f"\n🔄 [{now:%H:%M:%S}] Загрузка линии...", flush=True)
 
-            # 1. Раз в день (например, в 03:00 ночи) сохраняем результаты
             if now.hour == 3 and last_save_date != now.date():
                 save_ruscore_results()
                 last_save_date = now.date()
 
-            # 2. Value Betting на кэфах 1xBet
             games = get_prematch_games()
+            count_ok = 0
             count_value = 0
 
             for game in games:
@@ -119,13 +123,29 @@ def bot_loop():
                 tb_25 = parsed["odds"]["TB"].get(2.5)
                 if not tb_25 or not tb_25.get("over"): continue
 
+                count_ok += 1
                 coef_over = tb_25["over"]
                 p_book = 1 / coef_over
 
-                # Простая коррекция
-                if coef_over < 1.50: p_model = p_book + 0.03
-                elif coef_over > 2.50: p_model = p_book - 0.03
-                else: p_model = p_book + 0.01
+                # Пытаемся получить xG из nb-bet
+                nb_data = get_match_data(parsed["team1"], parsed["team2"])
+                
+                if nb_data:
+                    h_xg = nb_data["home_stats"]["avg_xg"]
+                    a_xg = nb_data["away_stats"]["avg_xg"]
+                    lam_total = h_xg + a_xg
+                    
+                    if lam_total > 0:
+                        p_model = prob_over(2.5, lam_total)
+                        print(f"   📈 xG: {h_xg} + {a_xg} = {lam_total:.2f} | Модель: {p_model:.1%}", flush=True)
+                    else:
+                        if coef_over < 1.50: p_model = p_book + 0.03
+                        elif coef_over > 2.50: p_model = p_book - 0.03
+                        else: p_model = p_book + 0.01
+                else:
+                    if coef_over < 1.50: p_model = p_book + 0.03
+                    elif coef_over > 2.50: p_model = p_book - 0.03
+                    else: p_model = p_book + 0.01
 
                 edge = p_model - p_book
 
@@ -142,7 +162,7 @@ def bot_loop():
                     send_telegram(msg)
                     print(f"🔥 ВАЛУЙ: {parsed['team1']} — {parsed['team2']}", flush=True)
 
-            print(f"✅ Валуев найдено: {count_value}. Спим 5 минут...", flush=True)
+            print(f"✅ Матчей: {count_ok} | Валуев найдено: {count_value}. Спим 5 минут...", flush=True)
             time.sleep(300)
 
         except KeyboardInterrupt: break
