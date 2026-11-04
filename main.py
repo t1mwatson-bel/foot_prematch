@@ -12,14 +12,13 @@ from stats_parser import parse_prematch_game
 LINE_URL = f"{BASE_URL}/service-api/main-line-feed/v3/games1x2"
 
 def get_prematch_games():
-    """Тянет линию с 1xBet. Возвращаем параметры, которые точно работали."""
-    # Используем topGamesByStat, как в твоём рабочем JSON
-    url = f"{BASE_URL}/service-api/main-line-feed/v3/topGamesByStat"
+    """Тянет линию с 1xBet по рабочему эндпоинту."""
+    url = f"{BASE_URL}/service-api/main-line-feed/v3/games1x2"
     params = {
         "cfView": 3,
-        "excludeSportIds": 66,
+        "count": 40,
         "fcountry": 1,
-        "gr": 2336,      # <-- ЭТО ГЛАВНОЕ. Лига Чемпионов. Позже расширим.
+        "gr": 2336,
         "grMode": 4,
         "lng": "ru",
         "ref": 1
@@ -39,7 +38,6 @@ def get_prematch_games():
     except Exception as e:
         print(f"❌ Исключение при запросе: {e}", flush=True)
         return []
-
 def run_web():
     try:
         web.app.run(host="0.0.0.0", port=3000, use_reloader=False, threaded=True)
