@@ -1,4 +1,3 @@
-from telegram_bot import send_telegram
 import time
 import threading
 import traceback
@@ -10,6 +9,7 @@ from config import *
 from stats_parser import parse_prematch_game
 from poisson_model import prob_over
 from parse_nb_bet_html import parse_nb_bet_html
+from telegram_bot import send_telegram
 
 # ==== API линии 1xBet ====
 LINE_URL = f"{BASE_URL}/service-api/main-line-feed/v3/games1x2"
@@ -106,7 +106,7 @@ def bot_loop():
                         f"\n   Начало: {parsed['start_time']:%d.%m %H:%M}"
                         f"\n   Кэф ТБ 2.5: {coef_over}"
                         f"\n   Средние голы: {parsed['team1']} — забивает {nb_data['avg_scored_home']}, пропускает {nb_data['avg_conceded_home']}"
-                        f"\n                 {parsed['team2']} — забивает {nb_data['avg_scored_away']}, пропускает {nb_data['avg_conceded_home']}"
+                        f"\n                 {parsed['team2']} — забивает {nb_data['avg_scored_away']}, пропускает {nb_data['avg_conceded_away']}"
                         f"\n   Ожидаемые голы (lam): {lam_home:.2f} + {lam_away:.2f} = {lam_total:.2f}"
                         f"\n   Модель: {p_model:.1%} | Букмекер: {p_book:.1%} | Edge: {edge:+.1%}",
                         flush=True
@@ -114,6 +114,21 @@ def bot_loop():
                     if edge > 0.05:
                         count_value += 1
                         print(f"   🔥 ВАЛУЙ", flush=True)
+
+                        msg = (
+                            f"🔥 <b>ВАЛУЙ: ТБ 2.5</b>\n\n"
+                            f"⚽ <b>{parsed['team1']} — {parsed['team2']}</b>\n"
+                            f"🏆 {parsed['liga']}\n"
+                            f"🕒 {parsed['start_time']:%d.%m %H:%M}\n\n"
+                            f"💰 Кэф: <b>{coef_over}</b>\n"
+                            f"📊 Модель: {p_model:.1%} | Букмекер: {p_book:.1%}\n"
+                            f"✅ Edge: +{edge:.1%}\n\n"
+                            f"📈 Средние голы:\n"
+                            f"   {parsed['team1']}: {nb_data['avg_scored_home']} забивает / {nb_data['avg_conceded_home']} пропускает\n"
+                            f"   {parsed['team2']}: {nb_data['avg_scored_away']} забивает / {nb_data['avg_conceded_away']} пропускает\n"
+                            f"🧮 Ожидаемые голы (lam): {lam_total:.2f}"
+                        )
+                        send_telegram(msg)
                 else:
                     print(
                         f"ℹ️ {parsed['team1']} — {parsed['team2']}: нет данных с nb-bet",
