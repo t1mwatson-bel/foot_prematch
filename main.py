@@ -1,3 +1,5 @@
+import gzip
+import brotli
 import time
 import threading
 import traceback
