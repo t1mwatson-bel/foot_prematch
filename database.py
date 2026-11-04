@@ -394,3 +394,26 @@ def schedule_live_telegram_retry(game_id, delay=60):
         """, (retry_after, str(game_id)))
 
         return cur.rowcount > 0
+
+def save_match_result(home_team, away_team, home_score, away_score, match_date):
+    """Сохраняет результат матча для накопления истории (прематч)."""
+    with get_connection() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS match_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                home_team TEXT,
+                away_team TEXT,
+                home_score INTEGER,
+                away_score INTEGER,
+                match_date TEXT,
+                UNIQUE(home_team, away_team, match_date)
+            )
+        """)
+        try:
+            conn.execute("""
+                INSERT OR IGNORE INTO match_history 
+                (home_team, away_team, home_score, away_score, match_date)
+                VALUES (?, ?, ?, ?, ?)
+            """, (home_team, away_team, home_score, away_score, match_date))
+        except Exception as e:
+            print(f"⚠️ Ошибка сохранения истории: {e}", flush=True)
