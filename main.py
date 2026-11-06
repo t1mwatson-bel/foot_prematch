@@ -1280,6 +1280,36 @@ def bot_loop():
                         )
                         continue
 
+                    # --- НОВАЯ ЛОГИКА: Проверяем, есть ли уже сообщение от модели ---
+                    match_key = get_prematch_match_key(match_data)
+                    with PREMATCH_MESSAGES_LOCK:
+                        saved_message = PREMATCH_MESSAGES.get(match_key)
+
+                    if saved_message:
+                        # Если сообщение есть, мы не шлем новое, а редактируем старое
+                        try:
+                            message_id = int(saved_message["message_id"])
+                            base_text = saved_message.get("base_text") or saved_message.get("text", "")
+                            
+                            # Формируем строчку подтверждения для ВАЛУЯ
+                            valuy_confirm = f"\n🔥 <b>ВАЛУЙ: ТБ 2.5</b> (Кэф: {coef_over:.3f}, Edge: +{edge:.1%})"
+                            
+                            # Проверяем, нет ли уже ВАЛУЯ в тексте
+                            if "ВАЛУЙ" not in base_text:
+                                updated_text = base_text + "\n\n🤝 <b>ПОДТВЕРЖДЕНИЕ СКАНЕРА</b>\n" + valuy_confirm
+                                edited = edit_telegram(message_id, updated_text)
+                                
+                                if edited:
+                                    saved_message["text"] = updated_text
+                                    save_prematch_messages()
+                                    mark_valuy_sent(match_data, message_id, market="TB2.5", outcome="OVER")
+                                    count_value += 1
+                                    print(f"🤝 ВАЛУЙ добавлен к сообщению модели: {parsed['team1']} — {parsed['team2']} | msg_id={message_id}", flush=True)
+                                    continue
+                        except Exception as e:
+                            print(f"⚠️ Ошибка дописывания ВАЛУЯ: {e}", flush=True)
+
+                    # --- Если сообщения от моделей нет, отправляем ВАЛУЙ как обычно ---
                     msg = (
                         f"🔥 <b>ВАЛУЙ: ТБ 2.5</b>\n\n"
                         f"⚽ <b>{html.escape(parsed['team1'])} — "
