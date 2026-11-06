@@ -1,12 +1,11 @@
 
-from config import MOSCOW_TZ
+# -*- coding: utf-8 -*-
+
 import os
-import re
 import json
 import sqlite3
-import logging
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 import database as db
 
@@ -15,179 +14,177 @@ import database as db
 # НАСТРОЙКИ
 # ============================================================
 
-logger = logging.getLogger(__name__)
-
 MODEL_NAMES = (
     "OLD CHECKLIST 10",
     "OLD GOALS MODEL",
 )
 
-# Используем существующую БД бота, но создаём отдельную таблицу.
-# Таблицы live-бота не изменяются.
-TABLE_NAME = "model_predictions"
+DB_PATH = db.DB_PATH
 
 
 # ============================================================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ПОДКЛЮЧЕНИЕ К БАЗЕ
 # ============================================================
-
-def now_ts():
-    return int(datetime.now(timezone.utc).timestamp())
-
-
-def normalize_team(name):
-    """Нормализация названия команды для осторожной сверки."""
-    if not name:
-        return ""
-
-    name = str(name).lower().strip()
-    name = re.sub(r"[^\w\s]", " ", name, flags=re.UNICODE)
-    name = re.sub(r"\s+", " ", name)
-
-    return name.strip()
-
-
-def safe_json(data):
-    try:
-        return json.dumps(
-            data,
-            ensure_ascii=False,
-            default=str
-        )
-    except Exception:
-        return "{}"
-
-
-def get_match_date(match_data):
-    start_ts = match_data.get("start_ts")
-
-    if start_ts:
-        try:
-            return datetime.fromtimestamp(
-                float(start_ts),
-                MOSCOW_TZ
-            ).strftime("%Y-%m-%d")
-        except Exception:
-            pass
-
-    start_time = match_data.get("start_time")
-
-    if start_time:
-        try:
-            dt = datetime.fromisoformat(
-                str(start_time).replace("Z", "+00:00")
-            )
-
-            if dt.tzinfo is None:
-                dt = MOSCOW_TZ.localize(dt)
-            else:
-                dt = dt.astimezone(MOSCOW_TZ)
-
-            return dt.strftime("%Y-%m-%d")
-
-        except Exception:
-            pass
-
-    return None
-
-
-def get_match_key(match_data):
-    """
-    Стабильный ключ матча.
-    Повторное сканирование не создаёт новые прогнозы.
-    """
-    event_id = match_data.get("event_id")
-
-    if event_id:
-        return f"id:{event_id}"
-
-    home = normalize_team(match_data.get("team1"))
-    away = normalize_team(match_data.get("team2"))
-    start_ts = match_data.get("start_ts")
-
-    return f"{home}|{away}|{start_ts}"
-
 
 def get_connection():
-    return db.get_connection()
+    conn = sqlite3.connect(
+        DB_PATH,
+        timeout=30
+    )
+
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 30000")
+
+    return conn
 
 
 # ============================================================
-# СОЗДАНИЕ ТАБЛИЦЫ
+# ИНИЦИАЛИЗАЦИЯ ТАБЛИЦ
 # ============================================================
 
 def init_db():
-    conn = get_connection()
 
-    try:
+    os.makedirs(
+        os.path.dirname(DB_PATH) or ".",
+        exist_ok=True
+    )
+
+    with get_connection() as conn:
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS model_predictions (
+
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
 
                 model_name TEXT NOT NULL,
                 match_key TEXT NOT NULL,
 
-                home_team TEXT,
-                away_team TEXT,
+                team1 TEXT NOT NULL,
+                team2 TEXT NOT NULL,
                 league TEXT,
 
-                match_date TEXT,
                 start_ts INTEGER,
+                match_date TEXT,
 
-                odds REAL,
-                prediction_json TEXT,
-                match_data_json TEXT,
+                odds_over REAL,
+                odds_under REAL,
+
+                prediction_json TEXT NOT NULL,
+                match_data_json TEXT NOT NULL,
 
                 outcome TEXT DEFAULT 'PENDING',
                 final_score TEXT,
 
-                created_ts INTEGER,
-                result_ts INTEGER,
+                profit REAL DEFAULT 0,
+
+                created_at INTEGER NOT NULL,
+                result_updated_at INTEGER,
 
                 UNIQUE(model_name, match_key)
             )
         """)
 
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_model_predictions_date
-            ON model_predictions(match_date)
+            CREATE INDEX IF NOT EXISTS
+            idx_model_predictions_name
+            ON model_predictions(model_name)
         """)
 
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_model_predictions_outcome
+            CREATE INDEX IF NOT EXISTS
+            idx_model_predictions_outcome
             ON model_predictions(outcome)
         """)
 
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_model_predictions_model
-            ON model_predictions(model_name)
+            CREATE INDEX IF NOT EXISTS
+            idx_model_predictions_start
+            ON model_predictions(start_ts)
         """)
 
         conn.commit()
 
-        logger.info("Таблица model_predictions готова")
+    print(
+        "✅ OLD MODEL STATS: таблица готова",
+        flush=True
+    )
 
-    finally:
-        conn.close()
+
+# ============================================================
+# БЕЗОПАСНОЕ ПРЕОБРАЗОВАНИЕ ДАННЫХ
+# ============================================================
+
+def safe_float(value):
+
+    try:
+        if value is None:
+            return None
+
+        result = float(value)
+
+        if result != result:
+            return None
+
+        return result
+
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def safe_json(data):
+
+    try:
+        return json.dumps(
+            data,
+            ensure_ascii=False,
+            default=str
+        )
+
+    except Exception:
+        return "{}"
+
+
+def make_match_key(match_data):
+
+    start_ts = match_data.get("start_ts")
+
+    team1 = str(
+        match_data.get("team1") or ""
+    ).strip().lower()
+
+    team2 = str(
+        match_data.get("team2") or ""
+    ).strip().lower()
+
+    if start_ts and team1 and team2:
+
+        return (
+            f"{int(start_ts)}:"
+            f"{team1}:"
+            f"{team2}"
+        )
+
+    return (
+        f"{team1}:"
+        f"{team2}:"
+        f"{match_data.get('start_time', '')}"
+    )
 
 
 # ============================================================
 # СОХРАНЕНИЕ ПРОГНОЗА
 # ============================================================
 
-def save_prediction(model_name, match_data, prediction):
-    """
-    Сохраняет прогноз модели.
-
-    Один матч одной модели записывается только один раз.
-    Уже сохранённый прогноз не перезаписывается при повторном
-    сканировании.
-    """
+def save_prediction(
+    model_name,
+    match_data,
+    prediction
+):
 
     if model_name not in MODEL_NAMES:
-        logger.warning(
-            "Неизвестная модель для сохранения: %s",
-            model_name
+        print(
+            f"⚠️ Неизвестная модель: {model_name}",
+            flush=True
         )
         return False
 
@@ -197,382 +194,373 @@ def save_prediction(model_name, match_data, prediction):
     if not isinstance(prediction, dict):
         return False
 
-    home = match_data.get("team1")
-    away = match_data.get("team2")
+    team1 = str(
+        match_data.get("team1") or ""
+    ).strip()
 
-    if not home or not away:
+    team2 = str(
+        match_data.get("team2") or ""
+    ).strip()
+
+    if not team1 or not team2:
         return False
 
-    match_key = get_match_key(match_data)
-
-    if not match_key:
-        return False
-
-    match_date = get_match_date(match_data)
-
-    if not match_date:
-        logger.warning(
-            "Не удалось определить дату матча: %s - %s",
-            home,
-            away
+    try:
+        start_ts = int(
+            match_data.get("start_ts") or 0
         )
-        return False
-
-    odds_data = match_data.get("odds") or {}
-
-    try:
-        odds = float(odds_data.get("over_2_5") or 0)
     except (TypeError, ValueError):
-        odds = 0.0
+        start_ts = 0
 
-    start_ts = match_data.get("start_ts")
+    match_key = make_match_key(match_data)
 
-    try:
-        start_ts = int(start_ts) if start_ts else None
-    except (TypeError, ValueError):
-        start_ts = None
+    odds = match_data.get("odds") or {}
 
-    conn = get_connection()
+    odds_over = safe_float(
+        odds.get("over_2_5")
+    )
 
-    try:
-        cursor = conn.execute("""
-            INSERT OR IGNORE INTO model_predictions (
-                model_name,
-                match_key,
-                home_team,
-                away_team,
-                league,
-                match_date,
-                start_ts,
-                odds,
-                prediction_json,
-                match_data_json,
-                outcome,
-                created_ts
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
-        """, (
-            model_name,
-            match_key,
-            str(home),
-            str(away),
-            str(match_data.get("league") or ""),
-            match_date,
-            start_ts,
-            odds if odds > 1 else None,
-            safe_json(prediction),
-            safe_json(match_data),
-            now_ts()
-        ))
+    odds_under = safe_float(
+        odds.get("under_2_5")
+    )
 
-        conn.commit()
+    match_date = None
 
-        saved = cursor.rowcount > 0
+    if start_ts:
+        match_date = datetime.fromtimestamp(
+            start_ts
+        ).strftime("%Y-%m-%d")
 
-        if saved:
-            logger.info(
-                "[%s] Сохранён прогноз: %s - %s",
-                model_name,
-                home,
-                away
-            )
-
-        return saved
-
-    except Exception:
-        logger.exception(
-            "Ошибка сохранения прогноза модели %s",
-            model_name
-        )
-        return False
-
-    finally:
-        conn.close()
-
-
-# ============================================================
-# СВЕРКА С ИСТОРИЕЙ РЕЗУЛЬТАТОВ
-# ============================================================
-
-def sync_results_from_history():
-    """
-    Сверяет ожидающие прогнозы с match_history.
-
-    Важное условие:
-    - дата должна совпасть;
-    - обе команды должны совпасть;
-    - счёт берётся только из match_history.
-
-    Если точного совпадения нет, прогноз остаётся PENDING.
-    """
-
-    conn = get_connection()
-
-    updated = 0
+    now_ts = int(datetime.now().timestamp())
 
     try:
-        pending = conn.execute("""
-            SELECT
-                id,
-                home_team,
-                away_team,
-                match_date
-            FROM model_predictions
-            WHERE outcome = 'PENDING'
-        """).fetchall()
 
-        for prediction in pending:
-            prediction_id = prediction[0]
-            home = normalize_team(prediction[1])
-            away = normalize_team(prediction[2])
-            match_date = prediction[3]
-
-            if not home or not away or not match_date:
-                continue
-
-            history = conn.execute("""
-                SELECT
-                    home_team,
-                    away_team,
-                    home_score,
-                    away_score
-                FROM match_history
-                WHERE match_date = ?
-            """, (match_date,)).fetchall()
-
-            found_result = None
-
-            for row in history:
-                history_home = normalize_team(row[0])
-                history_away = normalize_team(row[1])
-
-                if (
-                    history_home == home
-                    and history_away == away
-                ):
-                    found_result = row
-                    break
-
-            if found_result is None:
-                continue
-
-            try:
-                home_score = int(found_result[2])
-                away_score = int(found_result[3])
-            except (TypeError, ValueError):
-                continue
-
-            total_goals = home_score + away_score
-
-            # Обе модели на этом этапе оценивают ТБ 2.5.
-            # Счёт 3+ означает WIN, 0-2 означает LOSE.
-            outcome = "WIN" if total_goals >= 3 else "LOSE"
-
-            final_score = f"{home_score}:{away_score}"
+        with get_connection() as conn:
 
             cursor = conn.execute("""
-                UPDATE model_predictions
-                SET
-                    outcome = ?,
-                    final_score = ?,
-                    result_ts = ?
-                WHERE id = ?
-                  AND outcome = 'PENDING'
+                INSERT OR IGNORE INTO model_predictions (
+
+                    model_name,
+                    match_key,
+
+                    team1,
+                    team2,
+                    league,
+
+                    start_ts,
+                    match_date,
+
+                    odds_over,
+                    odds_under,
+
+                    prediction_json,
+                    match_data_json,
+
+                    outcome,
+                    profit,
+
+                    created_at
+
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0, ?)
             """, (
-                outcome,
-                final_score,
-                now_ts(),
-                prediction_id
+
+                model_name,
+                match_key,
+
+                team1,
+                team2,
+                match_data.get("league"),
+
+                start_ts or None,
+                match_date,
+
+                odds_over,
+                odds_under,
+
+                safe_json(prediction),
+                safe_json(match_data),
+
+                now_ts
+
             ))
 
-            if cursor.rowcount:
-                updated += 1
+            conn.commit()
 
-        conn.commit()
+            return cursor.rowcount > 0
 
-        if updated:
-            logger.info(
-                "Обновлено результатов новых моделей: %s",
-                updated
-            )
+    except Exception as e:
 
-        return updated
+        print(
+            f"❌ Ошибка сохранения прогноза "
+            f"{model_name}: {e}",
+            flush=True
+        )
 
-    except Exception:
-        logger.exception("Ошибка сверки результатов моделей")
-        return 0
-
-    finally:
-        conn.close()
+        return False
 
 
 # ============================================================
-# СТАТИСТИКА ОДНОЙ МОДЕЛИ
+# ПОЛУЧЕНИЕ СТАТИСТИКИ МОДЕЛИ
 # ============================================================
 
 def get_model_stats(model_name):
-    conn = get_connection()
+
+    result = {
+        "model_name": model_name,
+        "total": 0,
+        "wins": 0,
+        "loses": 0,
+        "pending": 0,
+        "settled": 0,
+        "accuracy": 0.0,
+        "profit": 0.0,
+        "roi": 0.0,
+        "average_odds": 0.0
+    }
 
     try:
-        rows = conn.execute("""
-            SELECT
-                outcome,
-                odds
-            FROM model_predictions
-            WHERE model_name = ?
-        """, (model_name,)).fetchall()
 
-        total = len(rows)
+        with get_connection() as conn:
 
-        wins = 0
-        losses = 0
-        pending = 0
-        void = 0
+            rows = conn.execute("""
+                SELECT
+                    outcome,
+                    odds_over,
+                    profit
+                FROM model_predictions
+                WHERE model_name = ?
+            """, (model_name,)).fetchall()
 
-        settled_odds = []
-        profit = 0.0
+        result["total"] = len(rows)
+
+        odds_values = []
 
         for row in rows:
-            outcome = row[0]
-            odds = row[1]
 
-            if outcome == "PENDING":
-                pending += 1
-                continue
-
-            if outcome == "VOID":
-                void += 1
-                continue
+            outcome = row["outcome"]
 
             if outcome == "WIN":
-                wins += 1
-
-                if odds and odds > 1:
-                    profit += odds - 1
-                    settled_odds.append(float(odds))
-                else:
-                    profit += 0
+                result["wins"] += 1
 
             elif outcome == "LOSE":
-                losses += 1
-                profit -= 1
+                result["loses"] += 1
 
-                if odds and odds > 1:
-                    settled_odds.append(float(odds))
+            elif outcome == "PENDING":
+                result["pending"] += 1
 
-        settled = wins + losses
+            if outcome in ("WIN", "LOSE"):
 
-        accuracy = (
-            wins / settled * 100
-            if settled else 0.0
+                result["settled"] += 1
+
+                result["profit"] += float(
+                    row["profit"] or 0
+                )
+
+            odds = safe_float(
+                row["odds_over"]
+            )
+
+            if odds and odds > 1:
+                odds_values.append(odds)
+
+        settled = result["settled"]
+
+        if settled:
+
+            result["accuracy"] = round(
+                result["wins"] / settled * 100,
+                2
+            )
+
+            result["roi"] = round(
+                result["profit"] / settled * 100,
+                2
+            )
+
+        if odds_values:
+
+            result["average_odds"] = round(
+                sum(odds_values) / len(odds_values),
+                3
+            )
+
+        result["profit"] = round(
+            result["profit"],
+            2
         )
 
-        roi = (
-            profit / settled * 100
-            if settled else 0.0
+        return result
+
+    except Exception as e:
+
+        print(
+            f"⚠️ Ошибка статистики {model_name}: {e}",
+            flush=True
         )
 
-        average_odds = (
-            sum(settled_odds) / len(settled_odds)
-            if settled_odds else 0.0
-        )
-
-        return {
-            "model_name": model_name,
-            "total": total,
-            "settled": settled,
-            "wins": wins,
-            "losses": losses,
-            "pending": pending,
-            "void": void,
-            "accuracy": round(accuracy, 2),
-            "profit": round(profit, 2),
-            "roi": round(roi, 2),
-            "average_odds": round(average_odds, 3)
-        }
-
-    finally:
-        conn.close()
-
-
-# ============================================================
-# ОБЩАЯ СТАТИСТИКА ДВУХ МОДЕЛЕЙ
-# ============================================================
-
-def get_all_stats():
-    return {
-        model_name: get_model_stats(model_name)
-        for model_name in MODEL_NAMES
-    }
+        return result
 
 
 # ============================================================
 # ПОСЛЕДНИЕ ПРОГНОЗЫ
 # ============================================================
 
-def get_recent_predictions(model_name, limit=30):
-    conn = get_connection()
+def get_recent_predictions(
+    limit=30,
+    model_name=None
+):
 
     try:
-        rows = conn.execute("""
-            SELECT
-                id,
-                home_team,
-                away_team,
-                league,
-                match_date,
-                odds,
-                prediction_json,
-                outcome,
-                final_score,
-                created_ts
-            FROM model_predictions
-            WHERE model_name = ?
-            ORDER BY created_ts DESC
-            LIMIT ?
-        """, (
-            model_name,
-            int(limit)
-        )).fetchall()
+
+        limit = max(
+            1,
+            min(int(limit), 500)
+        )
+
+        with get_connection() as conn:
+
+            if model_name:
+
+                rows = conn.execute("""
+                    SELECT *
+                    FROM model_predictions
+                    WHERE model_name = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """, (
+                    model_name,
+                    limit
+                )).fetchall()
+
+            else:
+
+                rows = conn.execute("""
+                    SELECT *
+                    FROM model_predictions
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """, (limit,)).fetchall()
 
         result = []
 
         for row in rows:
-            try:
-                prediction_data = json.loads(row[6] or "{}")
-            except Exception:
-                prediction_data = {}
 
-            result.append({
-                "id": row[0],
-                "home_team": row[1],
-                "away_team": row[2],
-                "league": row[3],
-                "match_date": row[4],
-                "odds": row[5],
-                "prediction": prediction_data,
-                "outcome": row[7],
-                "final_score": row[8],
-                "created_ts": row[9]
-            })
+            item = dict(row)
+
+            try:
+                item["prediction"] = json.loads(
+                    item.get("prediction_json") or "{}"
+                )
+            except Exception:
+                item["prediction"] = {}
+
+            try:
+                item["match_data"] = json.loads(
+                    item.get("match_data_json") or "{}"
+                )
+            except Exception:
+                item["match_data"] = {}
+
+            result.append(item)
 
         return result
 
-    finally:
-        conn.close()
+    except Exception as e:
+
+        print(
+            f"⚠️ Ошибка получения прогнозов моделей: {e}",
+            flush=True
+        )
+
+        return []
 
 
 # ============================================================
-# СЛУЖЕБНАЯ ПРОВЕРКА
+# СВОДКА ДВУХ МОДЕЛЕЙ
 # ============================================================
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+def get_all_model_stats():
 
-    init_db()
+    return {
+        name: get_model_stats(name)
+        for name in MODEL_NAMES
+    }
 
-    print(json.dumps(
-        get_all_stats(),
-        ensure_ascii=False,
-        indent=2
-    ))
+
+# ============================================================
+# ОБНОВЛЕНИЕ РЕЗУЛЬТАТА
+# ============================================================
+
+def set_prediction_result(
+    prediction_id,
+    outcome,
+    final_score=None
+):
+
+    if outcome not in (
+        "WIN",
+        "LOSE",
+        "VOID"
+    ):
+        return False
+
+    try:
+
+        with get_connection() as conn:
+
+            row = conn.execute("""
+                SELECT odds_over
+                FROM model_predictions
+                WHERE id = ?
+            """, (prediction_id,)).fetchone()
+
+            if not row:
+                return False
+
+            odds = safe_float(
+                row["odds_over"]
+            )
+
+            if outcome == "WIN":
+
+                profit = (
+                    max(0, odds - 1)
+                    if odds and odds > 1
+                    else 0
+                )
+
+            elif outcome == "LOSE":
+                profit = -1.0
+
+            else:
+                profit = 0.0
+
+            conn.execute("""
+                UPDATE model_predictions
+                SET
+                    outcome = ?,
+                    final_score = ?,
+                    profit = ?,
+                    result_updated_at = ?
+                WHERE id = ?
+            """, (
+                outcome,
+                final_score,
+                profit,
+                int(datetime.now().timestamp()),
+                prediction_id
+            ))
+
+            conn.commit()
+
+        return True
+
+    except Exception as e:
+
+        print(
+            f"❌ Ошибка обновления результата модели: {e}",
+            flush=True
+        )
+
+        return False
