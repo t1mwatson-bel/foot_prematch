@@ -6,7 +6,6 @@ from datetime import datetime
 from flask import Flask, render_template_string, jsonify
 
 import database as db
-import match_momentum
 import model_stats
 
 
