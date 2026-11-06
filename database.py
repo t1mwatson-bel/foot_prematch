@@ -2,7 +2,6 @@
 import os
 import sqlite3
 import time
-from datetime import datetime
 
 DATA_DIR = os.getenv("DATA_DIR", "/app")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -58,6 +57,20 @@ def init_db():
             )
         """)
 
+        # История завершённых матчей для прематч-моделей.
+        # Создаём при запуске, а не только при первом сохранении результата.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS match_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                home_team TEXT,
+                away_team TEXT,
+                home_score INTEGER,
+                away_score INTEGER,
+                match_date TEXT,
+                UNIQUE(home_team, away_team, match_date)
+            )
+        """)
+
         migrations = {
             "match_id": "TEXT",
             "market_type": "TEXT DEFAULT 'next_goal'",
@@ -106,6 +119,16 @@ def init_db():
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_live_telegram_retry
             ON live_signals(status, telegram_updated, telegram_retry_after)
+        """)
+
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_match_history_teams
+            ON match_history(home_team, away_team)
+        """)
+
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_match_history_date
+            ON match_history(match_date)
         """)
 
     print(f"✅ База данных готова: {DB_PATH}", flush=True)
@@ -395,9 +418,11 @@ def schedule_live_telegram_retry(game_id, delay=60):
 
         return cur.rowcount > 0
 
+
 def save_match_result(home_team, away_team, home_score, away_score, match_date):
     """Сохраняет результат матча для накопления истории (прематч)."""
     with get_connection() as conn:
+        # Оставлено для совместимости: таблица также создаётся в init_db().
         conn.execute("""
             CREATE TABLE IF NOT EXISTS match_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -409,11 +434,18 @@ def save_match_result(home_team, away_team, home_score, away_score, match_date):
                 UNIQUE(home_team, away_team, match_date)
             )
         """)
+
         try:
             conn.execute("""
-                INSERT OR IGNORE INTO match_history 
+                INSERT OR IGNORE INTO match_history
                 (home_team, away_team, home_score, away_score, match_date)
                 VALUES (?, ?, ?, ?, ?)
-            """, (home_team, away_team, home_score, away_score, match_date))
+            """, (
+                home_team,
+                away_team,
+                home_score,
+                away_score,
+                match_date,
+            ))
         except Exception as e:
             print(f"⚠️ Ошибка сохранения истории: {e}", flush=True)
