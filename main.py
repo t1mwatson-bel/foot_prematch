@@ -1,9 +1,13 @@
 
+# -*- coding: utf-8 -*-
+
 import time
 import threading
 import traceback
+import html
 
 from datetime import datetime, timedelta
+from math import exp, factorial
 
 import requests
 import web
@@ -53,7 +57,183 @@ LINE_URL = f"{BASE_URL}/service-api/main-line-feed/v3/games1x2"
 SCAN_INTERVAL = 300
 PREMATCH_COUNT = 40
 
+# Сохраняем все прогнозы моделей на сайте.
+# В Telegram отправляем только прошедшие фильтры.
 SHADOW_MODE = True
+
+CHECKLIST_MIN_SCORE = 8
+GOALS_MIN_PROBABILITY = 0.65
+
+
+# ============================================================
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ============================================================
+
+def safe_float(value):
+    try:
+        if value is None:
+            return None
+
+        result = float(value)
+
+        if result != result:
+            return None
+
+        return result
+
+    except (TypeError, ValueError):
+        return None
+
+
+def format_percent(value):
+    number = safe_float(value)
+
+    if number is None:
+        return "нет данных"
+
+    if number <= 1:
+        number *= 100
+
+    return f"{number:.1f}%"
+
+
+def send_model_prediction(
+    prediction_id,
+    model_name,
+    match_data,
+    prediction,
+    message
+):
+    """
+    Отправляет прогноз модели в Telegram.
+    Повторно уже опубликованные прогнозы не отправляет.
+    """
+
+    if not prediction_id:
+        print(
+            f"⚠️ {model_name}: отсутствует ID прогноза",
+            flush=True
+        )
+        return False
+
+    try:
+        existing = model_stats.get_prediction(prediction_id)
+
+        if not existing:
+            print(
+                f"⚠️ {model_name}: прогноз {prediction_id} "
+                f"не найден в базе",
+                flush=True
+            )
+            return False
+
+        if existing.get("telegram_sent"):
+            return False
+
+        message_id = send_telegram(message)
+
+        if not message_id:
+            print(
+                f"❌ {model_name}: Telegram не подтвердил отправку",
+                flush=True
+            )
+            return False
+
+        saved = model_stats.set_telegram_message(
+            prediction_id,
+            message_id,
+            message
+        )
+
+        if not saved:
+            print(
+                f"⚠️ {model_name}: сообщение отправлено, "
+                f"но message_id не удалось сохранить. "
+                f"ID сообщения: {message_id}",
+                flush=True
+            )
+            return False
+
+        print(
+            f"📨 {model_name}: прогноз отправлен в Telegram "
+            f"(ID {prediction_id}, сообщение {message_id})",
+            flush=True
+        )
+
+        return True
+
+    except Exception as e:
+        print(
+            f"❌ Ошибка отправки {model_name}: {e}",
+            flush=True
+        )
+        traceback.print_exc()
+        return False
+
+
+def make_checklist_message(match_data, prediction):
+    home = html.escape(str(match_data["team1"]))
+    away = html.escape(str(match_data["team2"]))
+    league = html.escape(str(match_data.get("league") or "Неизвестная лига"))
+
+    start_time = match_data.get("start_time", "")
+
+    try:
+        start_time = datetime.fromisoformat(
+            str(start_time)
+        ).strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        start_time = str(start_time)
+
+    score = safe_float(prediction.get("score"))
+
+    score_text = (
+        f"{score:g}/10"
+        if score is not None
+        else "нет данных"
+    )
+
+    return (
+        f"🧾 <b>OLD CHECKLIST 10</b>\n\n"
+        f"⚽ <b>{home} — {away}</b>\n"
+        f"🏆 {league}\n"
+        f"🕒 {start_time}\n\n"
+        f"🎯 Чек-лист: <b>{score_text}</b>\n"
+        f"📊 Рынок: <b>ТБ 2.5</b>\n\n"
+        f"✅ Прогноз прошёл фильтр качества"
+    )
+
+
+def make_goals_message(
+    match_data,
+    probability,
+    odds,
+    value
+):
+    home = html.escape(str(match_data["team1"]))
+    away = html.escape(str(match_data["team2"]))
+    league = html.escape(str(match_data.get("league") or "Неизвестная лига"))
+
+    start_time = match_data.get("start_time", "")
+
+    try:
+        start_time = datetime.fromisoformat(
+            str(start_time)
+        ).strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        start_time = str(start_time)
+
+    return (
+        f"🧠 <b>OLD GOALS MODEL</b>\n\n"
+        f"⚽ <b>{home} — {away}</b>\n"
+        f"🏆 {league}\n"
+        f"🕒 {start_time}\n\n"
+        f"🎯 Прогноз: <b>ТБ 2.5</b>\n"
+        f"📊 Вероятность: <b>{probability * 100:.1f}%</b>\n"
+        f"💰 Коэффициент: <b>{odds:.2f}</b>\n"
+        f"📈 Value: <b>+{value * 100:.1f}%</b>\n\n"
+        f"✅ Прогноз прошёл фильтр качества"
+    )
 
 
 # ============================================================
@@ -117,7 +297,6 @@ def parse_prematch_game(game):
             "Неизвестная лига"
         )
 
-        # Стабильный ID события, если он присутствует в API
         event_id = (
             game.get("id")
             or game.get("I")
@@ -320,13 +499,10 @@ def build_model_input(parsed, nb_data):
 
 
 # ============================================================
-# ЗАПУСК ТЕНЕВЫХ МОДЕЛЕЙ
+# ЗАПУСК ДВУХ МОДЕЛЕЙ И ФИЛЬТРЫ TELEGRAM
 # ============================================================
 
 def run_shadow_models(match_data):
-    if not SHADOW_MODE:
-        return
-
     if not MODEL_STATS_AVAILABLE:
         return
 
@@ -347,19 +523,49 @@ def run_shadow_models(match_data):
                 and prediction.get("ready")
                 and prediction.get("candidate")
             ):
-                saved = model_stats.save_prediction(
+                prediction_id = model_stats.save_prediction(
                     model_name="OLD CHECKLIST 10",
                     match_data=match_data,
                     prediction=prediction
                 )
 
-                if saved:
+                if prediction_id:
+                    score = safe_float(
+                        prediction.get("score")
+                    )
+
                     print(
                         f"🧾 OLD CHECKLIST 10 | {match_name} "
-                        f"| {prediction.get('score')}/10 "
+                        f"| {score if score is not None else 'нет данных'}/10 "
                         f"| сохранён",
                         flush=True
                     )
+
+                    # Публикуем только при результате 8/10 или выше.
+                    if (
+                        score is not None
+                        and score >= CHECKLIST_MIN_SCORE
+                    ):
+                        message = make_checklist_message(
+                            match_data,
+                            prediction
+                        )
+
+                        send_model_prediction(
+                            prediction_id,
+                            "OLD CHECKLIST 10",
+                            match_data,
+                            prediction,
+                            message
+                        )
+
+                    else:
+                        print(
+                            f"⏭ CHECKLIST: {match_name} "
+                            f"| ниже порога {CHECKLIST_MIN_SCORE}/10 "
+                            f"| оставлен на сайте",
+                            flush=True
+                        )
 
         except Exception as e:
             print(
@@ -381,29 +587,91 @@ def run_shadow_models(match_data):
                 and prediction.get("ready")
                 and prediction.get("candidate")
             ):
-                saved = model_stats.save_prediction(
+                prediction_id = model_stats.save_prediction(
                     model_name="OLD GOALS MODEL",
                     match_data=match_data,
                     prediction=prediction
                 )
 
-                if saved:
-                    probability = prediction.get(
-                        "probability_over_2_5"
+                if prediction_id:
+                    probability = safe_float(
+                        prediction.get(
+                            "probability_over_2_5"
+                        )
                     )
 
+                    if probability is not None and probability > 1:
+                        probability /= 100
+
+                    odds = safe_float(
+                        match_data.get("odds", {}).get(
+                            "over_2_5"
+                        )
+                    )
+
+                    value = None
+
+                    if (
+                        probability is not None
+                        and odds is not None
+                        and odds > 1
+                    ):
+                        value = probability * odds - 1
+
                     probability_text = (
-                        f"{float(probability) * 100:.1f}%"
+                        f"{probability * 100:.1f}%"
                         if probability is not None
+                        else "нет данных"
+                    )
+
+                    value_text = (
+                        f"{value * 100:+.1f}%"
+                        if value is not None
                         else "нет данных"
                     )
 
                     print(
                         f"🧠 OLD GOALS MODEL | {match_name} "
                         f"| вероятность {probability_text} "
+                        f"| Value {value_text} "
                         f"| сохранён",
                         flush=True
                     )
+
+                    # Два обязательных условия:
+                    # вероятность не ниже 65%;
+                    # Value строго положительный.
+                    if (
+                        probability is not None
+                        and probability >= GOALS_MIN_PROBABILITY
+                        and odds is not None
+                        and odds > 1
+                        and value is not None
+                        and value > 0
+                    ):
+                        message = make_goals_message(
+                            match_data,
+                            probability,
+                            odds,
+                            value
+                        )
+
+                        send_model_prediction(
+                            prediction_id,
+                            "OLD GOALS MODEL",
+                            match_data,
+                            prediction,
+                            message
+                        )
+
+                    else:
+                        print(
+                            f"⏭ GOALS MODEL: {match_name} "
+                            f"| не прошёл фильтр "
+                            f"(вероятность от 65% + положительный Value) "
+                            f"| оставлен на сайте",
+                            flush=True
+                        )
 
         except Exception as e:
             print(
@@ -416,9 +684,6 @@ def run_shadow_models(match_data):
 # ============================================================
 # СТАРАЯ МАТЕМАТИКА ПРЕМАТЧ-СКАНЕРА
 # ============================================================
-
-from math import exp, factorial
-
 
 def poisson_prob(k, lam):
     return (lam ** k) * exp(-lam) / factorial(k)
@@ -560,6 +825,13 @@ def bot_loop():
         flush=True
     )
 
+    print(
+        f"📨 TELEGRAM FILTERS: "
+        f"CHECKLIST >= {CHECKLIST_MIN_SCORE}/10 | "
+        f"GOALS >= {GOALS_MIN_PROBABILITY * 100:.0f}% + positive Value",
+        flush=True
+    )
+
     last_save_date = None
 
     while True:
@@ -572,7 +844,7 @@ def bot_loop():
                 flush=True
             )
 
-            # Ежедневное сохранение истории
+            # Ежедневное сохранение истории.
             if (
                 now.hour == 3
                 and last_save_date != now.date()
@@ -580,7 +852,7 @@ def bot_loop():
                 save_ruscore_results()
                 last_save_date = now.date()
 
-            # Сверяем результаты на каждом цикле
+            # Сверяем результаты на каждом цикле.
             sync_model_results()
 
             games = get_prematch_games()
@@ -608,7 +880,7 @@ def bot_loop():
 
                 count_ok += 1
 
-                # Получение NB-Bet
+                # Получение NB-Bet.
                 try:
                     nb_data = get_match_data(
                         parsed["team1"],
@@ -628,7 +900,7 @@ def bot_loop():
                     nb_data
                 )
 
-                # Новые независимые модели
+                # Новые независимые модели.
                 if CHECKLIST_AVAILABLE or GOALS_MODEL_AVAILABLE:
                     run_shadow_models(match_data)
                     count_shadow += 1
@@ -717,7 +989,7 @@ def bot_loop():
                         flush=True
                     )
 
-            # Повторная сверка после обработки линии
+            # Повторная сверка после обработки линии.
             sync_model_results()
 
             print(
