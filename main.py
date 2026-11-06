@@ -2,23 +2,21 @@
 import time
 import threading
 import traceback
-import sqlite3
 
 from datetime import datetime, timedelta
-from math import exp, factorial
 
 import requests
 import web
 import database as db
 
-from nbbet_stats import get_match_data
 from config import *
+from nbbet_stats import get_match_data
 from telegram_bot import send_telegram
 from ruscore import fetch_ruscore_events
 
 
 # ============================================================
-# НОВЫЕ НЕЗАВИСИМЫЕ МОДЕЛИ
+# НЕЗАВИСИМЫЕ МОДЕЛИ OLD
 # ============================================================
 
 try:
@@ -27,7 +25,7 @@ try:
 except Exception as e:
     checklist_model = None
     CHECKLIST_AVAILABLE = False
-    print(f"⚠️ OLD CHECKLIST 10 пока недоступен: {e}", flush=True)
+    print(f"⚠️ OLD CHECKLIST 10 недоступен: {e}", flush=True)
 
 try:
     import goals_model
@@ -35,7 +33,7 @@ try:
 except Exception as e:
     goals_model = None
     GOALS_MODEL_AVAILABLE = False
-    print(f"⚠️ OLD GOALS MODEL пока недоступна: {e}", flush=True)
+    print(f"⚠️ OLD GOALS MODEL недоступна: {e}", flush=True)
 
 try:
     import model_stats
@@ -43,24 +41,24 @@ try:
 except Exception as e:
     model_stats = None
     MODEL_STATS_AVAILABLE = False
-    print(f"⚠️ Статистика новых моделей пока недоступна: {e}", flush=True)
+    print(f"⚠️ Статистика моделей недоступна: {e}", flush=True)
 
 
 # ============================================================
-# API ЛИНИИ 1XBET
+# НАСТРОЙКИ
 # ============================================================
 
 LINE_URL = f"{BASE_URL}/service-api/main-line-feed/v3/games1x2"
 
-# Период сканирования прематч-линии
 SCAN_INTERVAL = 300
-
-# Не более 40 матчей за один цикл
 PREMATCH_COUNT = 40
 
-# Тестовый режим новых моделей
 SHADOW_MODE = True
 
+
+# ============================================================
+# ПРЕМАТЧ-ЛИНИЯ
+# ============================================================
 
 def get_prematch_games():
     params = {
@@ -74,31 +72,37 @@ def get_prematch_games():
     }
 
     try:
-        r = requests.get(
+        response = requests.get(
             LINE_URL,
             headers=HEADERS,
             params=params,
             timeout=15
         )
 
-        if r.status_code != 200:
-            print(f"❌ Ошибка линии: HTTP {r.status_code}", flush=True)
+        if response.status_code != 200:
+            print(
+                f"❌ Ошибка линии: HTTP {response.status_code}",
+                flush=True
+            )
             return []
 
-        data = r.json()
+        data = response.json()
 
         if isinstance(data, list):
-            return [g for g in data if isinstance(g, dict)]
+            return [
+                game for game in data
+                if isinstance(game, dict)
+            ]
 
         return []
 
     except Exception as e:
-        print(f"❌ Ошибка загрузки прематч-линии: {e}", flush=True)
+        print(f"❌ Ошибка загрузки линии: {e}", flush=True)
         return []
 
 
 # ============================================================
-# ПАРСИНГ ПРЕМАТЧА
+# ПАРСИНГ МАТЧА
 # ============================================================
 
 def parse_prematch_game(game):
@@ -106,10 +110,19 @@ def parse_prematch_game(game):
         team1 = game["opponent1"]["fullName"]
         team2 = game["opponent2"]["fullName"]
 
-        start_ts = game["startTs"]
+        start_ts = int(game["startTs"])
+
         liga = game.get("liga", {}).get(
             "name",
             "Неизвестная лига"
+        )
+
+        # Стабильный ID события, если он присутствует в API
+        event_id = (
+            game.get("id")
+            or game.get("I")
+            or game.get("ID")
+            or game.get("eventId")
         )
 
         odds = {"TB": {}}
@@ -140,13 +153,23 @@ def parse_prematch_game(game):
                     if param is None:
                         continue
 
+                    try:
+                        param = float(param)
+                    except (TypeError, ValueError):
+                        continue
+
                     if ev_type == 9:
-                        odds["TB"].setdefault(param, {})["over"] = cf
+                        odds["TB"].setdefault(
+                            param, {}
+                        )["over"] = cf
 
                     elif ev_type == 10:
-                        odds["TB"].setdefault(param, {})["under"] = cf
+                        odds["TB"].setdefault(
+                            param, {}
+                        )["under"] = cf
 
         return {
+            "event_id": str(event_id) if event_id else None,
             "team1": team1,
             "team2": team2,
             "liga": liga,
@@ -154,7 +177,7 @@ def parse_prematch_game(game):
                 start_ts,
                 MOSCOW_TZ
             ),
-            "start_ts": int(start_ts),
+            "start_ts": start_ts,
             "odds": odds
         }
 
@@ -164,22 +187,16 @@ def parse_prematch_game(game):
 
 
 # ============================================================
-# ИСТОРИЯ КОМАНД ИЗ SQLITE
+# ИСТОРИЯ КОМАНД
 # ============================================================
 
 def get_team_history(team_name, limit=10):
-    """
-    Получает последние завершённые матчи команды
-    из match_history.
-
-    Ничего не генерирует и не подменяет:
-    если истории нет, возвращает пустой список.
-    """
-
     result = []
 
     try:
-        with db.get_connection() as conn:
+        conn = db.get_connection()
+
+        try:
             rows = conn.execute("""
                 SELECT
                     home_team,
@@ -198,18 +215,24 @@ def get_team_history(team_name, limit=10):
                 limit
             )).fetchall()
 
+        finally:
+            conn.close()
+
         for row in rows:
             is_home = (
                 str(row["home_team"]).lower()
                 == str(team_name).lower()
             )
 
-            if is_home:
-                scored = row["home_score"]
-                conceded = row["away_score"]
-            else:
-                scored = row["away_score"]
-                conceded = row["home_score"]
+            try:
+                if is_home:
+                    scored = int(row["home_score"])
+                    conceded = int(row["away_score"])
+                else:
+                    scored = int(row["away_score"])
+                    conceded = int(row["home_score"])
+            except (TypeError, ValueError):
+                continue
 
             result.append({
                 "opponent": (
@@ -218,15 +241,15 @@ def get_team_history(team_name, limit=10):
                     else row["home_team"]
                 ),
                 "is_home": is_home,
-                "scored": int(scored),
-                "conceded": int(conceded),
-                "total": int(scored) + int(conceded),
+                "scored": scored,
+                "conceded": conceded,
+                "total": scored + conceded,
                 "date": row["match_date"]
             })
 
     except Exception as e:
         print(
-            f"⚠️ Ошибка истории команды {team_name}: {e}",
+            f"⚠️ Ошибка истории {team_name}: {e}",
             flush=True
         )
 
@@ -234,45 +257,43 @@ def get_team_history(team_name, limit=10):
 
 
 # ============================================================
-# ПОДГОТОВКА ОБЩИХ ДАННЫХ ДЛЯ МОДЕЛЕЙ
+# ОБЩИЕ ДАННЫЕ ДЛЯ МОДЕЛЕЙ
 # ============================================================
 
 def build_model_input(parsed, nb_data):
-    """
-    Формирует единый набор исходных данных.
-
-    Обе модели получают одинаковые исходные сведения,
-    но рассчитывают прогнозы независимо.
-    """
-
     team1 = parsed["team1"]
     team2 = parsed["team2"]
 
     home_stats = {}
     away_stats = {}
 
-    if nb_data:
+    if isinstance(nb_data, dict):
         home_stats = nb_data.get("home_stats") or {}
         away_stats = nb_data.get("away_stats") or {}
 
     tb25 = parsed["odds"]["TB"].get(2.5) or {}
-    odds_over = tb25.get("over")
-    odds_under = tb25.get("under")
 
     try:
-        odds_over = float(odds_over) if odds_over else None
+        odds_over = float(tb25.get("over"))
     except (TypeError, ValueError):
         odds_over = None
 
     try:
-        odds_under = float(odds_under) if odds_under else None
+        odds_under = float(tb25.get("under"))
     except (TypeError, ValueError):
         odds_under = None
 
+    home_history = get_team_history(team1, 10)
+    away_history = get_team_history(team2, 10)
+
     return {
+        "event_id": parsed.get("event_id"),
+
         "team1": team1,
         "team2": team2,
+
         "league": parsed["liga"],
+
         "start_time": parsed["start_time"].isoformat(),
         "start_ts": parsed["start_ts"],
 
@@ -285,38 +306,28 @@ def build_model_input(parsed, nb_data):
         "away_stats": away_stats,
 
         "history": {
-            "home": get_team_history(team1, 10),
-            "away": get_team_history(team2, 10)
+            "home": home_history,
+            "away": away_history
         },
 
         "data_sources": {
             "nb_bet": bool(nb_data),
-            "match_history": True
+            "match_history": bool(
+                home_history or away_history
+            )
         }
     }
 
 
 # ============================================================
-# ЗАПУСК OLD CHECKLIST 10 И OLD GOALS MODEL
+# ЗАПУСК ТЕНЕВЫХ МОДЕЛЕЙ
 # ============================================================
 
 def run_shadow_models(match_data):
-    """
-    Запускает обе модели независимо.
-
-    Новые модели не отправляют Telegram-сообщения.
-    Их прогнозы сохраняются отдельно.
-    """
-
     if not SHADOW_MODE:
         return
 
     if not MODEL_STATS_AVAILABLE:
-        print(
-            "⚠️ Статистика моделей не подключена. "
-            "Тестовые прогнозы не сохраняются.",
-            flush=True
-        )
         return
 
     match_name = (
@@ -331,7 +342,11 @@ def run_shadow_models(match_data):
         try:
             prediction = checklist_model.evaluate(match_data)
 
-            if prediction:
+            if (
+                isinstance(prediction, dict)
+                and prediction.get("ready")
+                and prediction.get("candidate")
+            ):
                 saved = model_stats.save_prediction(
                     model_name="OLD CHECKLIST 10",
                     match_data=match_data,
@@ -339,17 +354,16 @@ def run_shadow_models(match_data):
                 )
 
                 if saved:
-                    score = prediction.get("score", "—")
                     print(
                         f"🧾 OLD CHECKLIST 10 | {match_name} "
-                        f"| оценка {score}/10 | сохранён",
+                        f"| {prediction.get('score')}/10 "
+                        f"| сохранён",
                         flush=True
                     )
 
         except Exception as e:
             print(
-                f"❌ OLD CHECKLIST 10: ошибка для "
-                f"{match_name}: {e}",
+                f"❌ CHECKLIST: {match_name}: {e}",
                 flush=True
             )
             traceback.print_exc()
@@ -362,7 +376,11 @@ def run_shadow_models(match_data):
         try:
             prediction = goals_model.evaluate(match_data)
 
-            if prediction:
+            if (
+                isinstance(prediction, dict)
+                and prediction.get("ready")
+                and prediction.get("candidate")
+            ):
                 saved = model_stats.save_prediction(
                     model_name="OLD GOALS MODEL",
                     match_data=match_data,
@@ -374,32 +392,33 @@ def run_shadow_models(match_data):
                         "probability_over_2_5"
                     )
 
-                    if probability is not None:
-                        probability_text = (
-                            f"{float(probability) * 100:.1f}%"
-                        )
-                    else:
-                        probability_text = "недостаточно данных"
+                    probability_text = (
+                        f"{float(probability) * 100:.1f}%"
+                        if probability is not None
+                        else "нет данных"
+                    )
 
                     print(
                         f"🧠 OLD GOALS MODEL | {match_name} "
-                        f"| вероятность ТБ 2.5: "
-                        f"{probability_text} | сохранён",
+                        f"| вероятность {probability_text} "
+                        f"| сохранён",
                         flush=True
                     )
 
         except Exception as e:
             print(
-                f"❌ OLD GOALS MODEL: ошибка для "
-                f"{match_name}: {e}",
+                f"❌ GOALS MODEL: {match_name}: {e}",
                 flush=True
             )
             traceback.print_exc()
 
 
 # ============================================================
-# СТАРАЯ МАТЕМАТИКА ПРЕЖНЕГО ПРЕМАТЧ-СКАНЕРА
+# СТАРАЯ МАТЕМАТИКА ПРЕМАТЧ-СКАНЕРА
 # ============================================================
+
+from math import exp, factorial
+
 
 def poisson_prob(k, lam):
     return (lam ** k) * exp(-lam) / factorial(k)
@@ -410,15 +429,16 @@ def prob_over(total, lam):
         poisson_prob(k, lam)
         for k in range(int(total) + 1)
     )
+
     return 1 - p_under
 
 
 # ============================================================
-# НАКОПЛЕНИЕ РЕЗУЛЬТАТОВ RUSCORE
+# СОХРАНЕНИЕ РЕЗУЛЬТАТОВ RUSCORE
 # ============================================================
 
 def save_ruscore_results():
-    print("📥 Накопление истории (Ruscore)...", flush=True)
+    print("📥 Накопление истории Ruscore...", flush=True)
 
     yesterday = (
         datetime.now(MOSCOW_TZ) - timedelta(days=1)
@@ -426,6 +446,7 @@ def save_ruscore_results():
 
     try:
         events = fetch_ruscore_events(yesterday)
+
         count = 0
 
         for ev in events:
@@ -439,10 +460,10 @@ def save_ruscore_results():
             h_score = None
             a_score = None
 
-            for s in score:
-                if s.get("type") == "overall":
-                    h_score = s.get("home")
-                    a_score = s.get("away")
+            for item in score:
+                if item.get("type") == "overall":
+                    h_score = item.get("home")
+                    a_score = item.get("away")
                     break
 
             if h_score is None or a_score is None:
@@ -459,12 +480,38 @@ def save_ruscore_results():
             count += 1
 
         print(
-            f"✅ Сохранено результатов: {count}",
+            f"✅ Сохранено результатов Ruscore: {count}",
             flush=True
         )
 
     except Exception as e:
         print(f"⚠️ Ошибка Ruscore: {e}", flush=True)
+        traceback.print_exc()
+
+
+# ============================================================
+# СВЕРКА РЕЗУЛЬТАТОВ НОВЫХ МОДЕЛЕЙ
+# ============================================================
+
+def sync_model_results():
+    if not MODEL_STATS_AVAILABLE:
+        return
+
+    try:
+        updated = model_stats.sync_results_from_history()
+
+        if updated:
+            print(
+                f"🏁 Обновлены результаты новых моделей: {updated}",
+                flush=True
+            )
+
+    except Exception as e:
+        print(
+            f"⚠️ Ошибка синхронизации моделей: {e}",
+            flush=True
+        )
+        traceback.print_exc()
 
 
 # ============================================================
@@ -488,10 +535,7 @@ def run_web():
 # ============================================================
 
 def bot_loop():
-    print(
-        "🚀 OLD FOOTBALL PREMATCH ЗАПУЩЕН",
-        flush=True
-    )
+    print("🚀 OLD FOOTBALL PREMATCH ЗАПУЩЕН", flush=True)
 
     print(
         f"🧾 OLD CHECKLIST 10: "
@@ -502,6 +546,12 @@ def bot_loop():
     print(
         f"🧠 OLD GOALS MODEL: "
         f"{'ON' if GOALS_MODEL_AVAILABLE else 'OFF'}",
+        flush=True
+    )
+
+    print(
+        f"📊 MODEL STATS: "
+        f"{'ON' if MODEL_STATS_AVAILABLE else 'OFF'}",
         flush=True
     )
 
@@ -522,13 +572,16 @@ def bot_loop():
                 flush=True
             )
 
-            # Ежедневное накопление истории
+            # Ежедневное сохранение истории
             if (
                 now.hour == 3
                 and last_save_date != now.date()
             ):
                 save_ruscore_results()
                 last_save_date = now.date()
+
+            # Сверяем результаты на каждом цикле
+            sync_model_results()
 
             games = get_prematch_games()
 
@@ -555,27 +608,27 @@ def bot_loop():
 
                 count_ok += 1
 
-                # Получение статистики NB-Bet
+                # Получение NB-Bet
                 try:
                     nb_data = get_match_data(
                         parsed["team1"],
                         parsed["team2"]
                     )
+
                 except Exception as e:
                     print(
-                        f"⚠️ NB-Bet: ошибка "
-                        f"{parsed['team1']} — {parsed['team2']}: {e}",
+                        f"⚠️ NB-Bet: {parsed['team1']} — "
+                        f"{parsed['team2']}: {e}",
                         flush=True
                     )
                     nb_data = None
 
-                # Общий пакет данных для независимых моделей
                 match_data = build_model_input(
                     parsed,
                     nb_data
                 )
 
-                # Запуск двух новых моделей
+                # Новые независимые модели
                 if CHECKLIST_AVAILABLE or GOALS_MODEL_AVAILABLE:
                     run_shadow_models(match_data)
                     count_shadow += 1
@@ -597,13 +650,17 @@ def bot_loop():
                 p_book = 1 / coef_over
 
                 if nb_data:
-                    h_xg = float(
-                        nb_data["home_stats"].get("avg_xg") or 0
-                    )
+                    try:
+                        h_xg = float(
+                            nb_data["home_stats"].get("avg_xg") or 0
+                        )
 
-                    a_xg = float(
-                        nb_data["away_stats"].get("avg_xg") or 0
-                    )
+                        a_xg = float(
+                            nb_data["away_stats"].get("avg_xg") or 0
+                        )
+                    except (TypeError, ValueError):
+                        h_xg = 0
+                        a_xg = 0
 
                     lam_total = h_xg + a_xg
 
@@ -660,11 +717,13 @@ def bot_loop():
                         flush=True
                     )
 
+            # Повторная сверка после обработки линии
+            sync_model_results()
+
             print(
                 f"\n✅ Матчей обработано: {count_ok}\n"
                 f"🔥 Старых валуев: {count_value}\n"
-                f"🧪 Матчей передано новым моделям: "
-                f"{count_shadow}\n"
+                f"🧪 Матчей передано новым моделям: {count_shadow}\n"
                 f"⏳ Следующее сканирование через "
                 f"{SCAN_INTERVAL // 60} минут.",
                 flush=True
@@ -700,6 +759,7 @@ if __name__ == "__main__":
                 f"⚠️ Ошибка инициализации статистики моделей: {e}",
                 flush=True
             )
+            traceback.print_exc()
 
     threading.Thread(
         target=run_web,
