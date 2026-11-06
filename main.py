@@ -1,6 +1,6 @@
-
 # -*- coding: utf-8 -*-
 
+import os  # <--- ДОБАВИЛИ ЭТУ СТРОЧКУ
 import time
 import threading
 import traceback
@@ -17,9 +17,11 @@ from config import *
 from nbbet_stats import get_match_data
 from telegram_bot import send_telegram
 from ruscore import fetch_ruscore_events
+
 # --- ВЫЗОВ ОЧИСТКИ ---
 # Проверяем, есть ли файл-флаг. Если нет — чистим базу.
 if not os.path.exists(".db_cleaned"):
+    print("🧹 Файл-флаг не найден. Запускаем очистку базы...", flush=True)
     import clean_db
     clean_db.run_cleanup()
 # --------------------
