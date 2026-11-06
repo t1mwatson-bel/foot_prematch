@@ -68,7 +68,7 @@ except Exception as e:
 
 LINE_URL = f"{BASE_URL}/service-api/main-line-feed/v3/games1x2"
 
-SCAN_INTERVAL = 300
+SCAN_INTERVAL = 3 * 60 * 60  # Сканировать каждые 3 часа
 PREMATCH_COUNT = 40
 
 SHADOW_MODE = True
@@ -290,11 +290,6 @@ def send_model_prediction(
 
     Первая прошедшая фильтр модель создаёт сообщение.
     Вторая модель редактирует это сообщение и добавляет подтверждение.
-
-    Важно: флаг telegram_sent сам по себе больше не блокирует отправку.
-    Сначала проверяем сохранённую связку и реальный message_id.
-    Это исправляет ситуацию, когда запись в БД уже помечена отправленной,
-    а связки сообщения в JSON нет.
     """
     if not prediction_id:
         print(
@@ -1173,6 +1168,16 @@ def bot_loop():
                 ):
                     continue
 
+                # --- ФИЛЬТР ВРЕМЕНИ ---
+                # Берем только матчи, до которых осталось от 0 до 24 часов
+                start_ts = parsed["start_ts"]
+                now_ts = int(time.time())
+                hours_until_match = (start_ts - now_ts) / 3600
+
+                if hours_until_match < 0 or hours_until_match > 24:
+                    continue
+                # ----------------------
+
                 count_ok += 1
 
                 # Получение NB-Bet.
@@ -1185,177 +1190,3 @@ def bot_loop():
                     print(
                         f"⚠️ NB-Bet: {parsed['team1']} — "
                         f"{parsed['team2']}: {e}",
-                        flush=True
-                    )
-                    nb_data = None
-
-                match_data = build_model_input(parsed, nb_data)
-
-                # Новые независимые модели.
-                if CHECKLIST_AVAILABLE or GOALS_MODEL_AVAILABLE:
-                    run_shadow_models(match_data)
-                    count_shadow += 1
-
-                # --------------------------------------------
-                # СТАРЫЙ ПРЕМАТЧ-АЛГОРИТМ — БЕЗ ИЗМЕНЕНИЯ МАТЕМАТИКИ
-                # --------------------------------------------
-
-                tb25 = parsed["odds"]["TB"].get(2.5)
-                if not tb25 or not tb25.get("over"):
-                    continue
-
-                try:
-                    coef_over = float(tb25["over"])
-                except (TypeError, ValueError):
-                    continue
-
-                if coef_over <= 1:
-                    continue
-
-                p_book = 1 / coef_over
-
-                if nb_data:
-                    try:
-                        h_xg = float(
-                            nb_data["home_stats"].get("avg_xg") or 0
-                        )
-                        a_xg = float(
-                            nb_data["away_stats"].get("avg_xg") or 0
-                        )
-                    except (TypeError, ValueError):
-                        h_xg = 0
-                        a_xg = 0
-
-                    lam_total = h_xg + a_xg
-
-                    if lam_total > 0:
-                        p_model = prob_over(2.5, lam_total)
-
-                        print(
-                            f"📈 Старый сканер xG: "
-                            f"{h_xg:.2f} + {a_xg:.2f} "
-                            f"= {lam_total:.2f} "
-                            f"| Модель: {p_model:.1%}",
-                            flush=True
-                        )
-                    else:
-                        if coef_over < 1.50:
-                            p_model = p_book + 0.03
-                        elif coef_over > 2.50:
-                            p_model = p_book - 0.03
-                        else:
-                            p_model = p_book + 0.01
-                else:
-                    if coef_over < 1.50:
-                        p_model = p_book + 0.03
-                    elif coef_over > 2.50:
-                        p_model = p_book - 0.03
-                    else:
-                        p_model = p_book + 0.01
-
-                edge = p_model - p_book
-
-                if edge > 0.05:
-                    valuy_key = get_valuy_key(
-                        match_data,
-                        market="TB2.5",
-                        outcome="OVER"
-                    )
-
-                    with PREMATCH_VALUY_LOCK:
-                        already_sent = valuy_key in PREMATCH_VALUY_SENT
-
-                    if already_sent:
-                        count_value_duplicates += 1
-                        print(
-                            f"⏭ ВАЛУЙ уже публиковался: "
-                            f"{parsed['team1']} — {parsed['team2']} "
-                            f"| ТБ 2.5",
-                            flush=True
-                        )
-                        continue
-
-                    msg = (
-                        f"🔥 <b>ВАЛУЙ: ТБ 2.5</b>\n\n"
-                        f"⚽ <b>{html.escape(parsed['team1'])} — "
-                        f"{html.escape(parsed['team2'])}</b>\n"
-                        f"🏆 {html.escape(str(parsed['liga']))}\n"
-                        f"🕒 {parsed['start_time']:%d.%m %H:%M}\n"
-                        f"💰 Кэф: {coef_over:.3f}\n"
-                        f"📊 Edge: +{edge:.1%}"
-                    )
-
-                    message_id = send_telegram(msg)
-
-                    if message_id:
-                        count_value += 1
-                        saved = mark_valuy_sent(
-                            match_data,
-                            message_id,
-                            market="TB2.5",
-                            outcome="OVER"
-                        )
-
-                        print(
-                            f"🔥 ВАЛУЙ опубликован: "
-                            f"{parsed['team1']} — {parsed['team2']} "
-                            f"| message_id={message_id}"
-                            f"{'' if saved else ' | ⚠️ ошибка сохранения журнала'}",
-                            flush=True
-                        )
-                    else:
-                        print(
-                            f"❌ ВАЛУЙ не отправлен: "
-                            f"{parsed['team1']} — {parsed['team2']}; "
-                            f"на следующем цикле будет повторная попытка",
-                            flush=True
-                        )
-
-            sync_model_results()
-
-            print(
-                f"\n✅ Матчей обработано: {count_ok}\n"
-                f"🔥 Новых старых валуев: {count_value}\n"
-                f"⏭ Повторных валуев пропущено: "
-                f"{count_value_duplicates}\n"
-                f"🧪 Матчей передано новым моделям: {count_shadow}\n"
-                f"⏳ Следующее сканирование через "
-                f"{SCAN_INTERVAL // 60} минут.",
-                flush=True
-            )
-
-            time.sleep(SCAN_INTERVAL)
-
-        except KeyboardInterrupt:
-            print("🛑 Остановка OLD FOOTBALL", flush=True)
-            break
-
-        except Exception as e:
-            print(f"❌ Ошибка основного цикла: {e}", flush=True)
-            traceback.print_exc()
-            time.sleep(60)
-
-
-# ============================================================
-# ЗАПУСК
-# ============================================================
-
-if __name__ == "__main__":
-    db.init_db()
-
-    if MODEL_STATS_AVAILABLE:
-        try:
-            model_stats.init_db()
-        except Exception as e:
-            print(
-                f"⚠️ Ошибка инициализации статистики моделей: {e}",
-                flush=True
-            )
-            traceback.print_exc()
-
-    threading.Thread(
-        target=run_web,
-        daemon=True
-    ).start()
-
-    bot_loop()
