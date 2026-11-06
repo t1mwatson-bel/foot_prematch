@@ -7,6 +7,7 @@ import time
 import threading
 import traceback
 import html
+from telegram_bot import send_telegram, edit_telegram
 
 from datetime import datetime, timedelta
 from math import exp, factorial
@@ -238,27 +239,15 @@ def get_model_confirmation(model_name, prediction):
 
 
 def edit_prematch_telegram_message(message_id, text):
-    """
-    Редактирует уже опубликованное сообщение.
-    """
-
     try:
-        token = (
-            os.getenv("BOT_TOKEN")
-            or globals().get("BOT_TOKEN")
-        )
+        return edit_telegram(message_id, text)
 
-        chat_id = (
-            os.getenv("CHAT_ID")
-            or globals().get("CHAT_ID")
+    except Exception as e:
+        print(
+            f"❌ Ошибка редактирования Telegram: {e}",
+            flush=True
         )
-
-        if not token or not chat_id:
-            print(
-                "❌ Нет BOT_TOKEN или CHAT_ID для редактирования",
-                flush=True
-            )
-            return False
+        return False
 
         response = requests.post(
             f"https://api.telegram.org/bot{token}/editMessageText",
