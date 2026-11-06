@@ -59,15 +59,14 @@ def safe_json(data):
 
 
 def get_match_date(match_data):
-    """Получаем дату матча из start_ts или start_time."""
     start_ts = match_data.get("start_ts")
 
     if start_ts:
         try:
             return datetime.fromtimestamp(
                 float(start_ts),
-                timezone.utc
-            ).astimezone().strftime("%Y-%m-%d")
+                MOSCOW_TZ
+            ).strftime("%Y-%m-%d")
         except Exception:
             pass
 
@@ -75,9 +74,17 @@ def get_match_date(match_data):
 
     if start_time:
         try:
-            return datetime.fromisoformat(
+            dt = datetime.fromisoformat(
                 str(start_time).replace("Z", "+00:00")
-            ).astimezone().strftime("%Y-%m-%d")
+            )
+
+            if dt.tzinfo is None:
+                dt = MOSCOW_TZ.localize(dt)
+            else:
+                dt = dt.astimezone(MOSCOW_TZ)
+
+            return dt.strftime("%Y-%m-%d")
+
         except Exception:
             pass
 
