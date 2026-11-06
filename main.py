@@ -1,6 +1,8 @@
+
 # -*- coding: utf-8 -*-
 
-import os  # <--- ДОБАВИЛИ ЭТУ СТРОЧКУ
+import os
+import json
 import time
 import threading
 import traceback
@@ -18,13 +20,18 @@ from nbbet_stats import get_match_data
 from telegram_bot import send_telegram
 from ruscore import fetch_ruscore_events
 
-# --- ВЫЗОВ ОЧИСТКИ ---
-# Проверяем, есть ли файл-флаг. Если нет — чистим базу.
+
+# ============================================================
+# ОЧИСТКА БАЗЫ
+# ============================================================
+
 if not os.path.exists(".db_cleaned"):
-    print("🧹 Файл-флаг не найден. Запускаем очистку базы...", flush=True)
+    print(
+        "🧹 Файл-флаг не найден. Запускаем очистку базы...",
+        flush=True
+    )
     import clean_db
     clean_db.run_cleanup()
-# --------------------
 
 
 # ============================================================
@@ -65,12 +72,81 @@ LINE_URL = f"{BASE_URL}/service-api/main-line-feed/v3/games1x2"
 SCAN_INTERVAL = 300
 PREMATCH_COUNT = 40
 
-# Сохраняем все прогнозы моделей на сайте.
-# В Telegram отправляем только прошедшие фильтры.
 SHADOW_MODE = True
 
 CHECKLIST_MIN_SCORE = 8
 GOALS_MIN_PROBABILITY = 0.65
+
+
+# ============================================================
+# ХРАНЕНИЕ ОБЪЕДИНЁННЫХ TELEGRAM-СООБЩЕНИЙ
+# ============================================================
+
+DATA_DIR = os.getenv("DATA_DIR", "/app/data")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+PREMATCH_MESSAGES_FILE = os.path.join(
+    DATA_DIR,
+    "prematch_telegram_messages.json"
+)
+
+PREMATCH_MESSAGES_LOCK = threading.Lock()
+
+
+def load_prematch_messages():
+    try:
+        if os.path.exists(PREMATCH_MESSAGES_FILE):
+            with open(
+                PREMATCH_MESSAGES_FILE,
+                "r",
+                encoding="utf-8"
+            ) as f:
+                data = json.load(f)
+
+                if isinstance(data, dict):
+                    return data
+
+    except Exception as e:
+        print(
+            f"⚠️ Ошибка загрузки связок Telegram: {e}",
+            flush=True
+        )
+
+    return {}
+
+
+PREMATCH_MESSAGES = load_prematch_messages()
+
+
+def save_prematch_messages():
+    try:
+        temp_file = PREMATCH_MESSAGES_FILE + ".tmp"
+
+        with open(
+            temp_file,
+            "w",
+            encoding="utf-8"
+        ) as f:
+            json.dump(
+                PREMATCH_MESSAGES,
+                f,
+                ensure_ascii=False,
+                indent=2
+            )
+
+        os.replace(
+            temp_file,
+            PREMATCH_MESSAGES_FILE
+        )
+
+        return True
+
+    except Exception as e:
+        print(
+            f"⚠️ Ошибка сохранения связок Telegram: {e}",
+            flush=True
+        )
+        return False
 
 
 # ============================================================
@@ -105,6 +181,132 @@ def format_percent(value):
     return f"{number:.1f}%"
 
 
+def get_prematch_match_key(match_data):
+    """
+    Основной ключ — ID события букмекера.
+    Если ID отсутствует, используем команды и время матча.
+    """
+
+    event_id = match_data.get("event_id")
+
+    if event_id:
+        return f"event:{event_id}"
+
+    team1 = str(
+        match_data.get("team1", "")
+    ).strip().lower()
+
+    team2 = str(
+        match_data.get("team2", "")
+    ).strip().lower()
+
+    start_ts = str(
+        match_data.get("start_ts", "")
+    )
+
+    return f"{team1}|{team2}|{start_ts}"
+
+
+def get_model_confirmation(model_name, prediction):
+    if model_name == "OLD CHECKLIST 10":
+        score = safe_float(
+            prediction.get("score")
+        )
+
+        if score is not None:
+            return f"✅ OLD CHECKLIST 10 — {score:g}/10"
+
+        return "✅ OLD CHECKLIST 10"
+
+    if model_name == "OLD GOALS MODEL":
+        probability = safe_float(
+            prediction.get("probability_over_2_5")
+        )
+
+        if probability is not None:
+            if probability > 1:
+                probability /= 100
+
+            return (
+                f"✅ OLD GOALS MODEL — "
+                f"{probability * 100:.1f}%"
+            )
+
+        return "✅ OLD GOALS MODEL"
+
+    return f"✅ {html.escape(model_name)}"
+
+
+def edit_prematch_telegram_message(message_id, text):
+    """
+    Редактирует уже опубликованное сообщение.
+    """
+
+    try:
+        token = (
+            os.getenv("BOT_TOKEN")
+            or globals().get("BOT_TOKEN")
+        )
+
+        chat_id = (
+            os.getenv("CHAT_ID")
+            or globals().get("CHAT_ID")
+        )
+
+        if not token or not chat_id:
+            print(
+                "❌ Нет BOT_TOKEN или CHAT_ID для редактирования",
+                flush=True
+            )
+            return False
+
+        response = requests.post(
+            f"https://api.telegram.org/bot{token}/editMessageText",
+            json={
+                "chat_id": chat_id,
+                "message_id": int(message_id),
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True
+            },
+            timeout=15
+        )
+
+        try:
+            result = response.json()
+        except Exception:
+            result = {}
+
+        if result.get("ok"):
+            return True
+
+        description = str(
+            result.get("description", "")
+        )
+
+        if "message is not modified" in description.lower():
+            return True
+
+        print(
+            f"❌ Telegram не смог отредактировать сообщение: "
+            f"{description or response.text[:300]}",
+            flush=True
+        )
+
+        return False
+
+    except Exception as e:
+        print(
+            f"❌ Ошибка редактирования Telegram: {e}",
+            flush=True
+        )
+        return False
+
+
+# ============================================================
+# ОТПРАВКА И ОБЪЕДИНЕНИЕ ПРОГНОЗОВ
+# ============================================================
+
 def send_model_prediction(
     prediction_id,
     model_name,
@@ -113,8 +315,10 @@ def send_model_prediction(
     message
 ):
     """
-    Отправляет прогноз модели в Telegram.
-    Повторно уже опубликованные прогнозы не отправляет.
+    Один матч — одно сообщение Telegram.
+
+    Первая модель создаёт сообщение.
+    Вторая модель редактирует его и добавляет подтверждение.
     """
 
     if not prediction_id:
@@ -125,7 +329,9 @@ def send_model_prediction(
         return False
 
     try:
-        existing = model_stats.get_prediction(prediction_id)
+        existing = model_stats.get_prediction(
+            prediction_id
+        )
 
         if not existing:
             print(
@@ -138,37 +344,171 @@ def send_model_prediction(
         if existing.get("telegram_sent"):
             return False
 
-        message_id = send_telegram(message)
-
-        if not message_id:
-            print(
-                f"❌ {model_name}: Telegram не подтвердил отправку",
-                flush=True
-            )
-            return False
-
-        saved = model_stats.set_telegram_message(
-            prediction_id,
-            message_id,
-            message
+        match_key = get_prematch_match_key(
+            match_data
         )
 
-        if not saved:
-            print(
-                f"⚠️ {model_name}: сообщение отправлено, "
-                f"но message_id не удалось сохранить. "
-                f"ID сообщения: {message_id}",
-                flush=True
-            )
-            return False
-
-        print(
-            f"📨 {model_name}: прогноз отправлен в Telegram "
-            f"(ID {prediction_id}, сообщение {message_id})",
-            flush=True
+        confirmation = get_model_confirmation(
+            model_name,
+            prediction
         )
 
-        return True
+        with PREMATCH_MESSAGES_LOCK:
+
+            saved_message = PREMATCH_MESSAGES.get(
+                match_key
+            )
+
+            # ------------------------------------------------
+            # СООБЩЕНИЕ УЖЕ СУЩЕСТВУЕТ
+            # ------------------------------------------------
+
+            if saved_message:
+
+                confirmations = saved_message.get(
+                    "confirmations",
+                    []
+                )
+
+                already_added = any(
+                    item.get("model") == model_name
+                    for item in confirmations
+                )
+
+                if already_added:
+                    model_stats.set_telegram_message(
+                        prediction_id,
+                        saved_message["message_id"],
+                        saved_message.get("text", message)
+                    )
+
+                    return False
+
+                confirmations.append({
+                    "model": model_name,
+                    "text": confirmation
+                })
+
+                confirmation_block = (
+                    "\n\n🤝 <b>ПОДТВЕРЖДЕНИЕ МОДЕЛЕЙ</b>\n"
+                    + "\n".join(
+                        item["text"]
+                        for item in confirmations
+                    )
+                )
+
+                base_text = saved_message.get(
+                    "base_text",
+                    saved_message.get("text", message)
+                )
+
+                updated_text = (
+                    base_text + confirmation_block
+                )
+
+                edited = edit_prematch_telegram_message(
+                    saved_message["message_id"],
+                    updated_text
+                )
+
+                if not edited:
+                    print(
+                        f"⚠️ {model_name}: не удалось дополнить "
+                        f"сообщение матча {match_key}",
+                        flush=True
+                    )
+                    return False
+
+                saved_message["confirmations"] = confirmations
+                saved_message["text"] = updated_text
+
+                save_prematch_messages()
+
+                model_stats.set_telegram_message(
+                    prediction_id,
+                    saved_message["message_id"],
+                    updated_text
+                )
+
+                print(
+                    f"🤝 {model_name}: матч {match_key} "
+                    f"подтверждён второй моделью. "
+                    f"Сообщение "
+                    f"{saved_message['message_id']} отредактировано",
+                    flush=True
+                )
+
+                return True
+
+            # ------------------------------------------------
+            # ПЕРВАЯ МОДЕЛЬ — СОЗДАЁМ СООБЩЕНИЕ
+            # ------------------------------------------------
+
+            message_id = send_telegram(message)
+
+            if not message_id:
+                print(
+                    f"❌ {model_name}: Telegram не подтвердил отправку",
+                    flush=True
+                )
+                return False
+
+            try:
+                message_id = int(message_id)
+            except (TypeError, ValueError):
+                print(
+                    f"⚠️ {model_name}: получен некорректный "
+                    f"message_id: {message_id}",
+                    flush=True
+                )
+                return False
+
+            PREMATCH_MESSAGES[match_key] = {
+                "message_id": message_id,
+                "base_text": message,
+                "text": message,
+                "confirmations": [
+                    {
+                        "model": model_name,
+                        "text": confirmation
+                    }
+                ],
+                "event_id": match_data.get("event_id"),
+                "team1": match_data.get("team1"),
+                "team2": match_data.get("team2"),
+                "start_ts": match_data.get("start_ts")
+            }
+
+            mapping_saved = save_prematch_messages()
+
+            saved = model_stats.set_telegram_message(
+                prediction_id,
+                message_id,
+                message
+            )
+
+            if not mapping_saved:
+                print(
+                    f"⚠️ Не удалось сохранить связку матча "
+                    f"{match_key} с Telegram",
+                    flush=True
+                )
+
+            if not saved:
+                print(
+                    f"⚠️ {model_name}: сообщение отправлено, "
+                    f"но ID не удалось сохранить в статистике",
+                    flush=True
+                )
+
+            print(
+                f"📨 {model_name}: опубликован первый прогноз "
+                f"по матчу {match_key}. "
+                f"Сообщение {message_id}",
+                flush=True
+            )
+
+            return True
 
     except Exception as e:
         print(
@@ -179,12 +519,27 @@ def send_model_prediction(
         return False
 
 
-def make_checklist_message(match_data, prediction):
-    home = html.escape(str(match_data["team1"]))
-    away = html.escape(str(match_data["team2"]))
-    league = html.escape(str(match_data.get("league") or "Неизвестная лига"))
+# ============================================================
+# ФОРМИРОВАНИЕ СООБЩЕНИЙ МОДЕЛЕЙ
+# ============================================================
 
-    start_time = match_data.get("start_time", "")
+def make_checklist_message(match_data, prediction):
+    home = html.escape(
+        str(match_data["team1"])
+    )
+
+    away = html.escape(
+        str(match_data["team2"])
+    )
+
+    league = html.escape(
+        str(match_data.get("league") or "Неизвестная лига")
+    )
+
+    start_time = match_data.get(
+        "start_time",
+        ""
+    )
 
     try:
         start_time = datetime.fromisoformat(
@@ -193,7 +548,9 @@ def make_checklist_message(match_data, prediction):
     except Exception:
         start_time = str(start_time)
 
-    score = safe_float(prediction.get("score"))
+    score = safe_float(
+        prediction.get("score")
+    )
 
     score_text = (
         f"{score:g}/10"
@@ -218,11 +575,22 @@ def make_goals_message(
     odds,
     value
 ):
-    home = html.escape(str(match_data["team1"]))
-    away = html.escape(str(match_data["team2"]))
-    league = html.escape(str(match_data.get("league") or "Неизвестная лига"))
+    home = html.escape(
+        str(match_data["team1"])
+    )
 
-    start_time = match_data.get("start_time", "")
+    away = html.escape(
+        str(match_data["team2"])
+    )
+
+    league = html.escape(
+        str(match_data.get("league") or "Неизвестная лига")
+    )
+
+    start_time = match_data.get(
+        "start_time",
+        ""
+    )
 
     try:
         start_time = datetime.fromisoformat(
@@ -239,7 +607,7 @@ def make_goals_message(
         f"🎯 Прогноз: <b>ТБ 2.5</b>\n"
         f"📊 Вероятность: <b>{probability * 100:.1f}%</b>\n"
         f"💰 Коэффициент: <b>{odds:.2f}</b>\n"
-        f"📈 Value: <b>+{value * 100:.1f}%</b>\n\n"
+        f"📈 Value: <b>{value * 100:+.1f}%</b>\n\n"
         f"✅ Прогноз прошёл фильтр качества"
     )
 
@@ -285,7 +653,10 @@ def get_prematch_games():
         return []
 
     except Exception as e:
-        print(f"❌ Ошибка загрузки линии: {e}", flush=True)
+        print(
+            f"❌ Ошибка загрузки линии: {e}",
+            flush=True
+        )
         return []
 
 
@@ -300,7 +671,10 @@ def parse_prematch_game(game):
 
         start_ts = int(game["startTs"])
 
-        liga = game.get("liga", {}).get(
+        liga = game.get(
+            "liga",
+            {}
+        ).get(
             "name",
             "Неизвестная лига"
         )
@@ -312,7 +686,9 @@ def parse_prematch_game(game):
             or game.get("eventId")
         )
 
-        odds = {"TB": {}}
+        odds = {
+            "TB": {}
+        }
 
         for group in game.get("eventGroups", []):
             for event_list in group.get("events", []):
@@ -347,16 +723,22 @@ def parse_prematch_game(game):
 
                     if ev_type == 9:
                         odds["TB"].setdefault(
-                            param, {}
+                            param,
+                            {}
                         )["over"] = cf
 
                     elif ev_type == 10:
                         odds["TB"].setdefault(
-                            param, {}
+                            param,
+                            {}
                         )["under"] = cf
 
         return {
-            "event_id": str(event_id) if event_id else None,
+            "event_id": (
+                str(event_id)
+                if event_id
+                else None
+            ),
             "team1": team1,
             "team2": team2,
             "liga": liga,
@@ -369,7 +751,10 @@ def parse_prematch_game(game):
         }
 
     except Exception as e:
-        print(f"⚠️ Ошибка разбора матча: {e}", flush=True)
+        print(
+            f"⚠️ Ошибка разбора матча: {e}",
+            flush=True
+        )
         return None
 
 
@@ -418,6 +803,7 @@ def get_team_history(team_name, limit=10):
                 else:
                     scored = int(row["away_score"])
                     conceded = int(row["home_score"])
+
             except (TypeError, ValueError):
                 continue
 
@@ -458,7 +844,10 @@ def build_model_input(parsed, nb_data):
         home_stats = nb_data.get("home_stats") or {}
         away_stats = nb_data.get("away_stats") or {}
 
-    tb25 = parsed["odds"]["TB"].get(2.5) or {}
+    tb25 = (
+        parsed["odds"]["TB"].get(2.5)
+        or {}
+    )
 
     try:
         odds_over = float(tb25.get("over"))
@@ -470,8 +859,15 @@ def build_model_input(parsed, nb_data):
     except (TypeError, ValueError):
         odds_under = None
 
-    home_history = get_team_history(team1, 10)
-    away_history = get_team_history(team2, 10)
+    home_history = get_team_history(
+        team1,
+        10
+    )
+
+    away_history = get_team_history(
+        team2,
+        10
+    )
 
     return {
         "event_id": parsed.get("event_id"),
@@ -515,7 +911,8 @@ def run_shadow_models(match_data):
         return
 
     match_name = (
-        f"{match_data['team1']} — {match_data['team2']}"
+        f"{match_data['team1']} — "
+        f"{match_data['team2']}"
     )
 
     # --------------------------------------------------------
@@ -524,7 +921,9 @@ def run_shadow_models(match_data):
 
     if CHECKLIST_AVAILABLE:
         try:
-            prediction = checklist_model.evaluate(match_data)
+            prediction = checklist_model.evaluate(
+                match_data
+            )
 
             if (
                 isinstance(prediction, dict)
@@ -549,7 +948,6 @@ def run_shadow_models(match_data):
                         flush=True
                     )
 
-                    # Публикуем только при результате 8/10 или выше.
                     if (
                         score is not None
                         and score >= CHECKLIST_MIN_SCORE
@@ -570,7 +968,8 @@ def run_shadow_models(match_data):
                     else:
                         print(
                             f"⏭ CHECKLIST: {match_name} "
-                            f"| ниже порога {CHECKLIST_MIN_SCORE}/10 "
+                            f"| ниже порога "
+                            f"{CHECKLIST_MIN_SCORE}/10 "
                             f"| оставлен на сайте",
                             flush=True
                         )
@@ -588,7 +987,9 @@ def run_shadow_models(match_data):
 
     if GOALS_MODEL_AVAILABLE:
         try:
-            prediction = goals_model.evaluate(match_data)
+            prediction = goals_model.evaluate(
+                match_data
+            )
 
             if (
                 isinstance(prediction, dict)
@@ -608,13 +1009,17 @@ def run_shadow_models(match_data):
                         )
                     )
 
-                    if probability is not None and probability > 1:
+                    if (
+                        probability is not None
+                        and probability > 1
+                    ):
                         probability /= 100
 
                     odds = safe_float(
-                        match_data.get("odds", {}).get(
-                            "over_2_5"
-                        )
+                        match_data.get(
+                            "odds",
+                            {}
+                        ).get("over_2_5")
                     )
 
                     value = None
@@ -646,9 +1051,6 @@ def run_shadow_models(match_data):
                         flush=True
                     )
 
-                    # Два обязательных условия:
-                    # вероятность не ниже 65%;
-                    # Value строго положительный.
                     if (
                         probability is not None
                         and probability >= GOALS_MIN_PROBABILITY
@@ -676,7 +1078,8 @@ def run_shadow_models(match_data):
                         print(
                             f"⏭ GOALS MODEL: {match_name} "
                             f"| не прошёл фильтр "
-                            f"(вероятность от 65% + положительный Value) "
+                            f"(вероятность от 65% + "
+                            f"положительный Value) "
                             f"| оставлен на сайте",
                             flush=True
                         )
@@ -694,7 +1097,11 @@ def run_shadow_models(match_data):
 # ============================================================
 
 def poisson_prob(k, lam):
-    return (lam ** k) * exp(-lam) / factorial(k)
+    return (
+        (lam ** k)
+        * exp(-lam)
+        / factorial(k)
+    )
 
 
 def prob_over(total, lam):
@@ -711,20 +1118,34 @@ def prob_over(total, lam):
 # ============================================================
 
 def save_ruscore_results():
-    print("📥 Накопление истории Ruscore...", flush=True)
+    print(
+        "📥 Накопление истории Ruscore...",
+        flush=True
+    )
 
     yesterday = (
-        datetime.now(MOSCOW_TZ) - timedelta(days=1)
+        datetime.now(MOSCOW_TZ)
+        - timedelta(days=1)
     ).strftime("%Y-%m-%d")
 
     try:
-        events = fetch_ruscore_events(yesterday)
+        events = fetch_ruscore_events(
+            yesterday
+        )
 
         count = 0
 
         for ev in events:
-            home = ev.get("home", {}).get("name")
-            away = ev.get("away", {}).get("name")
+            home = ev.get(
+                "home",
+                {}
+            ).get("name")
+
+            away = ev.get(
+                "away",
+                {}
+            ).get("name")
+
             score = ev.get("score", [])
 
             if not home or not away or not score:
@@ -758,7 +1179,10 @@ def save_ruscore_results():
         )
 
     except Exception as e:
-        print(f"⚠️ Ошибка Ruscore: {e}", flush=True)
+        print(
+            f"⚠️ Ошибка Ruscore: {e}",
+            flush=True
+        )
         traceback.print_exc()
 
 
@@ -799,8 +1223,12 @@ def run_web():
             use_reloader=False,
             threaded=True
         )
+
     except Exception as e:
-        print(f"❌ Ошибка сайта: {e}", flush=True)
+        print(
+            f"❌ Ошибка сайта: {e}",
+            flush=True
+        )
 
 
 # ============================================================
@@ -808,7 +1236,10 @@ def run_web():
 # ============================================================
 
 def bot_loop():
-    print("🚀 OLD FOOTBALL PREMATCH ЗАПУЩЕН", flush=True)
+    print(
+        "🚀 OLD FOOTBALL PREMATCH ЗАПУЩЕН",
+        flush=True
+    )
 
     print(
         f"🧾 OLD CHECKLIST 10: "
@@ -836,7 +1267,14 @@ def bot_loop():
     print(
         f"📨 TELEGRAM FILTERS: "
         f"CHECKLIST >= {CHECKLIST_MIN_SCORE}/10 | "
-        f"GOALS >= {GOALS_MIN_PROBABILITY * 100:.0f}% + positive Value",
+        f"GOALS >= {GOALS_MIN_PROBABILITY * 100:.0f}% "
+        f"+ positive Value",
+        flush=True
+    )
+
+    print(
+        f"🤝 Объединённых Telegram-сообщений: "
+        f"{len(PREMATCH_MESSAGES)}",
         flush=True
     )
 
@@ -909,13 +1347,16 @@ def bot_loop():
                 )
 
                 # Новые независимые модели.
-                if CHECKLIST_AVAILABLE or GOALS_MODEL_AVAILABLE:
+                if (
+                    CHECKLIST_AVAILABLE
+                    or GOALS_MODEL_AVAILABLE
+                ):
                     run_shadow_models(match_data)
                     count_shadow += 1
 
-                # ------------------------------------------------
+                # --------------------------------------------
                 # СТАРЫЙ ПРЕМАТЧ-АЛГОРИТМ
-                # ------------------------------------------------
+                # --------------------------------------------
 
                 tb25 = parsed["odds"]["TB"].get(2.5)
 
@@ -923,7 +1364,9 @@ def bot_loop():
                     continue
 
                 try:
-                    coef_over = float(tb25["over"])
+                    coef_over = float(
+                        tb25["over"]
+                    )
                 except (TypeError, ValueError):
                     continue
 
@@ -932,12 +1375,17 @@ def bot_loop():
                 if nb_data:
                     try:
                         h_xg = float(
-                            nb_data["home_stats"].get("avg_xg") or 0
+                            nb_data["home_stats"].get(
+                                "avg_xg"
+                            ) or 0
                         )
 
                         a_xg = float(
-                            nb_data["away_stats"].get("avg_xg") or 0
+                            nb_data["away_stats"].get(
+                                "avg_xg"
+                            ) or 0
                         )
+
                     except (TypeError, ValueError):
                         h_xg = 0
                         a_xg = 0
@@ -1012,7 +1460,10 @@ def bot_loop():
             time.sleep(SCAN_INTERVAL)
 
         except KeyboardInterrupt:
-            print("🛑 Остановка OLD FOOTBALL", flush=True)
+            print(
+                "🛑 Остановка OLD FOOTBALL",
+                flush=True
+            )
             break
 
         except Exception as e:
@@ -1029,11 +1480,13 @@ def bot_loop():
 # ============================================================
 
 if __name__ == "__main__":
+
     db.init_db()
 
     if MODEL_STATS_AVAILABLE:
         try:
             model_stats.init_db()
+
         except Exception as e:
             print(
                 f"⚠️ Ошибка инициализации статистики моделей: {e}",
