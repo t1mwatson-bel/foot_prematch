@@ -12,12 +12,16 @@ def run_cleanup():
             conn.execute("DELETE FROM signals WHERE sent_at < strftime('%s', 'now', '-7 days')")
             # 3. Удаляем старые лайв-сигналы (завершенные старше 7 дней)
             conn.execute("DELETE FROM live_signals WHERE status IN ('WIN', 'LOSE') AND sent_at < strftime('%s', 'now', '-7 days')")
-            # 4. Сжимаем базу
+            
+            # ВАЖНО: Сохраняем удаления перед сжатием
+            conn.commit() 
+            
+            # 4. Сжимаем базу (VACUUM)
             conn.execute("VACUUM")
         
         print("✅ База данных успешно очищена и сжата!", flush=True)
         
-        # Создаем файл-флаг, чтобы в следующий раз не чистить заново
+        # Создаем файл-флаг
         with open(".db_cleaned", "w") as f:
             f.write(str(time.time()))
             
