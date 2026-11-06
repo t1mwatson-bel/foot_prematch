@@ -1190,3 +1190,177 @@ def bot_loop():
                     print(
                         f"⚠️ NB-Bet: {parsed['team1']} — "
                         f"{parsed['team2']}: {e}",
+                        flush=True
+                    )
+                    nb_data = None
+
+                match_data = build_model_input(parsed, nb_data)
+
+                # Новые независимые модели.
+                if CHECKLIST_AVAILABLE or GOALS_MODEL_AVAILABLE:
+                    run_shadow_models(match_data)
+                    count_shadow += 1
+
+                # --------------------------------------------
+                # СТАРЫЙ ПРЕМАТЧ-АЛГОРИТМ — БЕЗ ИЗМЕНЕНИЯ МАТЕМАТИКИ
+                # --------------------------------------------
+
+                tb25 = parsed["odds"]["TB"].get(2.5)
+                if not tb25 or not tb25.get("over"):
+                    continue
+
+                try:
+                    coef_over = float(tb25["over"])
+                except (TypeError, ValueError):
+                    continue
+
+                if coef_over <= 1:
+                    continue
+
+                p_book = 1 / coef_over
+
+                if nb_data:
+                    try:
+                        h_xg = float(
+                            nb_data["home_stats"].get("avg_xg") or 0
+                        )
+                        a_xg = float(
+                            nb_data["away_stats"].get("avg_xg") or 0
+                        )
+                    except (TypeError, ValueError):
+                        h_xg = 0
+                        a_xg = 0
+
+                    lam_total = h_xg + a_xg
+
+                    if lam_total > 0:
+                        p_model = prob_over(2.5, lam_total)
+
+                        print(
+                            f"📈 Старый сканер xG: "
+                            f"{h_xg:.2f} + {a_xg:.2f} "
+                            f"= {lam_total:.2f} "
+                            f"| Модель: {p_model:.1%}",
+                            flush=True
+                        )
+                    else:
+                        if coef_over < 1.50:
+                            p_model = p_book + 0.03
+                        elif coef_over > 2.50:
+                            p_model = p_book - 0.03
+                        else:
+                            p_model = p_book + 0.01
+                else:
+                    if coef_over < 1.50:
+                        p_model = p_book + 0.03
+                    elif coef_over > 2.50:
+                        p_model = p_book - 0.03
+                    else:
+                        p_model = p_book + 0.01
+
+                edge = p_model - p_book
+
+                if edge > 0.05:
+                    valuy_key = get_valuy_key(
+                        match_data,
+                        market="TB2.5",
+                        outcome="OVER"
+                    )
+
+                    with PREMATCH_VALUY_LOCK:
+                        already_sent = valuy_key in PREMATCH_VALUY_SENT
+
+                    if already_sent:
+                        count_value_duplicates += 1
+                        print(
+                            f"⏭ ВАЛУЙ уже публиковался: "
+                            f"{parsed['team1']} — {parsed['team2']} "
+                            f"| ТБ 2.5",
+                            flush=True
+                        )
+                        continue
+
+                    msg = (
+                        f"🔥 <b>ВАЛУЙ: ТБ 2.5</b>\n\n"
+                        f"⚽ <b>{html.escape(parsed['team1'])} — "
+                        f"{html.escape(parsed['team2'])}</b>\n"
+                        f"🏆 {html.escape(str(parsed['liga']))}\n"
+                        f"🕒 {parsed['start_time']:%d.%m %H:%M}\n"
+                        f"💰 Кэф: {coef_over:.3f}\n"
+                        f"📊 Edge: +{edge:.1%}"
+                    )
+
+                    message_id = send_telegram(msg)
+
+                    if message_id:
+                        count_value += 1
+                        saved = mark_valuy_sent(
+                            match_data,
+                            message_id,
+                            market="TB2.5",
+                            outcome="OVER"
+                        )
+
+                        print(
+                            f"🔥 ВАЛУЙ опубликован: "
+                            f"{parsed['team1']} — {parsed['team2']} "
+                            f"| message_id={message_id}"
+                            f"{'' if saved else ' | ⚠️ ошибка сохранения журнала'}",
+                            flush=True
+                        )
+                    else:
+                        print(
+                            f"❌ ВАЛУЙ не отправлен: "
+                            f"{parsed['team1']} — {parsed['team2']}; "
+                            f"на следующем цикле будет повторная попытка",
+                            flush=True
+                        )
+
+            sync_model_results()
+
+            print(
+                f"\n✅ Матчей обработано: {count_ok}\n"
+                f"🔥 Новых старых валуев: {count_value}\n"
+                f"⏭ Повторных валуев пропущено: "
+                f"{count_value_duplicates}\n"
+                f"🧪 Матчей передано новым моделям: {count_shadow}\n"
+                f"⏳ Следующее сканирование через "
+                f"{SCAN_INTERVAL // 3600} часа(ов).",
+                flush=True
+            )
+
+            time.sleep(SCAN_INTERVAL)
+
+        except KeyboardInterrupt:
+            print("🛑 Остановка OLD FOOTBALL", flush=True)
+            break
+
+        except Exception as e:
+            print(f"❌ Ошибка основного цикла: {e}", flush=True)
+            traceback.print_exc()
+            time.sleep(60)
+
+
+# ============================================================
+# ЗАПУСК
+# ============================================================
+
+if __name__ == "__main__":
+    db.init_db()
+
+    if MODEL_STATS_AVAILABLE:
+        try:
+            model_stats.init_db()
+        except Exception as e:
+            print(
+                f"⚠️ Ошибка инициализации статистики моделей: {e}",
+                flush=True
+            )
+            traceback.print_exc()
+
+    threading.Thread(
+        target=run_web,
+        daemon=True
+    ).start()
+
+    bot_loop()
