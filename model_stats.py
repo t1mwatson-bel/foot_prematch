@@ -5,7 +5,9 @@ import os
 import json
 import sqlite3
 import time
-from datetime import datetime, timedelta
+import re
+
+from datetime import datetime
 
 from config import MOSCOW_TZ
 
@@ -40,10 +42,6 @@ def now_ts():
     return int(time.time())
 
 
-def now_text():
-    return datetime.now(MOSCOW_TZ).strftime("%Y-%m-%d %H:%M:%S")
-
-
 def json_dump(data):
     return json.dumps(data or {}, ensure_ascii=False, default=str)
 
@@ -55,6 +53,19 @@ def json_load(value):
         return {}
 
 
+def safe_float(value, default=0.0):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def normalize_team(value):
+    return " ".join(str(value or "").strip().lower().split())
+
+
 # ============================================================
 # ИНИЦИАЛИЗАЦИЯ И МИГРАЦИЯ
 # ============================================================
@@ -62,105 +73,143 @@ def json_load(value):
 def init_db():
     conn = get_connection()
 
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS model_predictions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            model_name TEXT NOT NULL,
-            match_key TEXT NOT NULL,
-            home_team TEXT,
-            away_team TEXT,
-            league TEXT,
-            match_date TEXT,
-            start_ts INTEGER,
-            odds REAL,
-            prediction_json TEXT,
-            match_data_json TEXT,
-            outcome TEXT DEFAULT 'PENDING',
-            final_score TEXT,
-            profit REAL DEFAULT 0,
-            created_ts INTEGER,
-            result_ts INTEGER,
-            telegram_message_id INTEGER,
-            telegram_text TEXT,
-            telegram_sent INTEGER DEFAULT 0,
-            UNIQUE(model_name, match_key)
-        )
-    """)
-
-    columns = {
-        row["name"]
-        for row in conn.execute(
-            "PRAGMA table_info(model_predictions)"
-        ).fetchall()
-    }
-
-    migrations = {
-        "home_team": "TEXT",
-        "away_team": "TEXT",
-        "league": "TEXT",
-        "match_date": "TEXT",
-        "start_ts": "INTEGER",
-        "odds": "REAL",
-        "prediction_json": "TEXT",
-        "match_data_json": "TEXT",
-        "outcome": "TEXT DEFAULT 'PENDING'",
-        "final_score": "TEXT",
-        "profit": "REAL DEFAULT 0",
-        "created_ts": "INTEGER",
-        "result_ts": "INTEGER",
-        "telegram_message_id": "INTEGER",
-        "telegram_text": "TEXT",
-        "telegram_sent": "INTEGER DEFAULT 0",
-    }
-
-    for name, definition in migrations.items():
-        if name not in columns:
-            conn.execute(
-                f"ALTER TABLE model_predictions "
-                f"ADD COLUMN {name} {definition}"
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS model_predictions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_name TEXT NOT NULL,
+                match_key TEXT NOT NULL,
+                home_team TEXT,
+                away_team TEXT,
+                league TEXT,
+                match_date TEXT,
+                start_ts INTEGER,
+                odds REAL,
+                prediction_json TEXT,
+                match_data_json TEXT,
+                outcome TEXT DEFAULT 'PENDING',
+                final_score TEXT,
+                profit REAL DEFAULT 0,
+                created_ts INTEGER,
+                result_ts INTEGER,
+                telegram_message_id INTEGER,
+                telegram_text TEXT,
+                telegram_sent INTEGER DEFAULT 0,
+                UNIQUE(model_name, match_key)
             )
+        """)
 
-    conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_model_predictions_name
-        ON model_predictions(model_name)
-    """)
+        columns = {
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(model_predictions)"
+            ).fetchall()
+        }
 
-    conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_model_predictions_outcome
-        ON model_predictions(outcome)
-    """)
+        migrations = {
+            "home_team": "TEXT",
+            "away_team": "TEXT",
+            "league": "TEXT",
+            "match_date": "TEXT",
+            "start_ts": "INTEGER",
+            "odds": "REAL",
+            "prediction_json": "TEXT",
+            "match_data_json": "TEXT",
+            "outcome": "TEXT DEFAULT 'PENDING'",
+            "final_score": "TEXT",
+            "profit": "REAL DEFAULT 0",
+            "created_ts": "INTEGER",
+            "result_ts": "INTEGER",
+            "telegram_message_id": "INTEGER",
+            "telegram_text": "TEXT",
+            "telegram_sent": "INTEGER DEFAULT 0",
+        }
 
-    conn.commit()
-    conn.close()
+        for name, definition in migrations.items():
+            if name not in columns:
+                conn.execute(
+                    f"ALTER TABLE model_predictions "
+                    f"ADD COLUMN {name} {definition}"
+                )
 
-    print(f"✅ MODEL STATS: база готова: {DB_PATH}")
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_model_predictions_name
+            ON model_predictions(model_name)
+        """)
+
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_model_predictions_outcome
+            ON model_predictions(outcome)
+        """)
+
+        conn.commit()
+
+        print(f"✅ MODEL STATS: база готова: {DB_PATH}")
+
+    finally:
+        conn.close()
 
 
 # ============================================================
-# ПОДГОТОВКА ДАННЫХ
+# ПОДГОТОВКА ДАННЫХ МАТЧА
 # ============================================================
+
+def get_teams(match_data, prediction=None):
+    match_data = match_data or {}
+    prediction = prediction or {}
+
+    # ВАЖНО:
+    # main.py передаёт команды как team1 и team2.
+    # Также поддерживаем старые названия полей.
+
+    home = (
+        match_data.get("team1")
+        or match_data.get("home")
+        or match_data.get("home_team")
+        or prediction.get("team1")
+        or prediction.get("home_team")
+        or ""
+    )
+
+    away = (
+        match_data.get("team2")
+        or match_data.get("away")
+        or match_data.get("away_team")
+        or prediction.get("team2")
+        or prediction.get("away_team")
+        or ""
+    )
+
+    return str(home).strip(), str(away).strip()
+
 
 def get_match_key(match_data):
-    home = str(
-        match_data.get("home")
-        or match_data.get("home_team")
-        or ""
-    ).strip().lower()
+    match_data = match_data or {}
 
-    away = str(
-        match_data.get("away")
-        or match_data.get("away_team")
-        or ""
-    ).strip().lower()
+    event_id = (
+        match_data.get("event_id")
+        or match_data.get("id")
+        or match_data.get("I")
+    )
 
-    match_date = str(
-        match_data.get("date")
+    # ID события надёжнее названий и даты.
+    if event_id:
+        return f"event:{str(event_id).strip()}"
+
+    home, away = get_teams(match_data)
+
+    match_date = (
+        match_data.get("start_time")
+        or match_data.get("date")
         or match_data.get("match_date")
-        or match_data.get("start_time")
         or ""
-    ).strip()
+    )
 
-    return f"{home}|{away}|{match_date}"
+    return (
+        f"{normalize_team(home)}|"
+        f"{normalize_team(away)}|"
+        f"{str(match_date).strip()}"
+    )
 
 
 def get_odds(match_data, prediction):
@@ -173,10 +222,39 @@ def get_odds(match_data, prediction):
         or 0
     )
 
+    return safe_float(value)
+
+
+def get_start_ts(match_data):
+    value = match_data.get("start_ts")
+
     try:
-        return float(value)
+        if value:
+            return int(value)
     except (TypeError, ValueError):
-        return 0.0
+        pass
+
+    start_time = (
+        match_data.get("start_time")
+        or match_data.get("date")
+        or match_data.get("match_date")
+    )
+
+    if start_time:
+        try:
+            parsed = datetime.fromisoformat(
+                str(start_time).replace("Z", "+00:00")
+            )
+
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=MOSCOW_TZ)
+
+            return int(parsed.timestamp())
+
+        except Exception:
+            pass
+
+    return 0
 
 
 # ============================================================
@@ -191,20 +269,13 @@ def save_prediction(model_name, match_data, prediction):
     match_data = match_data or {}
     prediction = prediction or {}
 
-    home = (
-        match_data.get("home")
-        or match_data.get("home_team")
-        or ""
-    )
-
-    away = (
-        match_data.get("away")
-        or match_data.get("away_team")
-        or ""
-    )
+    home, away = get_teams(match_data, prediction)
 
     if not home or not away:
-        print("⚠️ Не удалось сохранить прогноз: нет названий команд")
+        print(
+            "⚠️ Не удалось сохранить прогноз: "
+            "не найдены team1/team2"
+        )
         return False
 
     match_key = get_match_key(match_data)
@@ -212,23 +283,19 @@ def save_prediction(model_name, match_data, prediction):
 
     league = (
         match_data.get("league")
+        or match_data.get("liga")
         or match_data.get("league_name")
         or ""
     )
 
     match_date = (
-        match_data.get("date")
+        match_data.get("start_time")
+        or match_data.get("date")
         or match_data.get("match_date")
-        or match_data.get("start_time")
         or ""
     )
 
-    start_ts = match_data.get("start_ts") or 0
-
-    try:
-        start_ts = int(start_ts)
-    except (TypeError, ValueError):
-        start_ts = 0
+    start_ts = get_start_ts(match_data)
 
     conn = get_connection()
 
@@ -252,8 +319,8 @@ def save_prediction(model_name, match_data, prediction):
         """, (
             model_name,
             match_key,
-            str(home),
-            str(away),
+            home,
+            away,
             str(league),
             str(match_date),
             start_ts,
@@ -268,10 +335,17 @@ def save_prediction(model_name, match_data, prediction):
         row = conn.execute("""
             SELECT id
             FROM model_predictions
-            WHERE model_name = ? AND match_key = ?
-        """, (model_name, match_key)).fetchone()
+            WHERE model_name = ?
+              AND match_key = ?
+        """, (
+            model_name,
+            match_key,
+        )).fetchone()
 
-        return row["id"] if row else False
+        if row:
+            return row["id"]
+
+        return False
 
     except Exception as e:
         print(f"❌ Ошибка сохранения прогноза: {e}")
@@ -347,9 +421,11 @@ def get_prediction(prediction_id):
             return None
 
         result = dict(row)
+
         result["prediction"] = json_load(
             result.get("prediction_json")
         )
+
         result["match_data"] = json_load(
             result.get("match_data_json")
         )
@@ -361,14 +437,11 @@ def get_prediction(prediction_id):
 
 
 # ============================================================
-# РАСЧЁТ РЕЗУЛЬТАТА
+# РАСЧЁТ ПРИБЫЛИ
 # ============================================================
 
 def calculate_profit(outcome, odds):
-    try:
-        odds = float(odds or 0)
-    except (TypeError, ValueError):
-        odds = 0
+    odds = safe_float(odds)
 
     if outcome == "WIN":
         return round(odds - 1, 4)
@@ -379,16 +452,68 @@ def calculate_profit(outcome, odds):
     return 0.0
 
 
+# ============================================================
+# ЧТЕНИЕ СЧЁТА ИЗ ИСТОРИИ
+# ============================================================
+
+def parse_score(home_score=None, away_score=None, score=None):
+    # Сначала используем отдельные поля счёта.
+    if home_score is not None and away_score is not None:
+        try:
+            return int(home_score), int(away_score)
+        except (TypeError, ValueError):
+            pass
+
+    # Затем пробуем общее поле.
+    value = str(score or "").strip()
+
+    if not value:
+        return None
+
+    numbers = re.findall(r"\d+", value)
+
+    if len(numbers) >= 2:
+        try:
+            return int(numbers[0]), int(numbers[1])
+        except (TypeError, ValueError):
+            pass
+
+    return None
+
+
+def date_part(value):
+    if not value:
+        return ""
+
+    value = str(value).strip()
+
+    try:
+        parsed = datetime.fromisoformat(
+            value.replace("Z", "+00:00")
+        )
+        return parsed.date().isoformat()
+    except Exception:
+        pass
+
+    return value[:10] if len(value) >= 10 else ""
+
+
+# ============================================================
+# СИНХРОНИЗАЦИЯ РЕЗУЛЬТАТОВ
+# ============================================================
+
 def sync_results_from_history():
     """
-    Сверяет прогнозы с match_history.
-    Для Over 2.5:
+    Сверяет прогнозы Over 2.5 с таблицей match_history.
+
     3 и более голов = WIN.
     0, 1 или 2 гола = LOSE.
+
+    Поддерживает home_score/away_score,
+    а также final_score и score.
     """
 
     conn = get_connection()
-
     updated = []
 
     try:
@@ -398,55 +523,115 @@ def sync_results_from_history():
             WHERE outcome = 'PENDING'
         """).fetchall()
 
+        try:
+            history_columns = {
+                row["name"]
+                for row in conn.execute(
+                    "PRAGMA table_info(match_history)"
+                ).fetchall()
+            }
+
+            if not history_columns:
+                return 0
+
+        except sqlite3.OperationalError:
+            return 0
+
+        if "home_team" not in history_columns:
+            return 0
+
+        if "away_team" not in history_columns:
+            return 0
+
+        history_rows = conn.execute("""
+            SELECT *
+            FROM match_history
+        """).fetchall()
+
         for row in rows:
             prediction = dict(row)
 
-            try:
-                history = conn.execute("""
-                    SELECT *
-                    FROM match_history
-                    WHERE LOWER(home_team) = LOWER(?)
-                      AND LOWER(away_team) = LOWER(?)
-                """, (
-                    prediction["home_team"],
-                    prediction["away_team"],
-                )).fetchall()
+            target_home = normalize_team(
+                prediction.get("home_team")
+            )
 
-            except sqlite3.OperationalError:
-                return 0
+            target_away = normalize_team(
+                prediction.get("away_team")
+            )
 
-            if not history:
+            if not target_home or not target_away:
                 continue
 
-            selected = None
+            target_date = date_part(
+                prediction.get("match_date")
+            )
 
-            for item in history:
-                item = dict(item)
+            candidates = []
 
-                score = (
-                    item.get("final_score")
-                    or item.get("score")
-                    or ""
+            for history_row in history_rows:
+                item = dict(history_row)
+
+                history_home = normalize_team(
+                    item.get("home_team")
                 )
 
-                numbers = [
-                    int(x)
-                    for x in str(score).replace(":", "-").split("-")
-                    if x.strip().isdigit()
-                ]
+                history_away = normalize_team(
+                    item.get("away_team")
+                )
 
-                if len(numbers) >= 2:
-                    selected = (item, numbers[0], numbers[1])
-                    break
+                if (
+                    history_home != target_home
+                    or history_away != target_away
+                ):
+                    continue
 
-            if not selected:
+                score = parse_score(
+                    item.get("home_score"),
+                    item.get("away_score"),
+                    (
+                        item.get("final_score")
+                        or item.get("score")
+                    )
+                )
+
+                if not score:
+                    continue
+
+                history_date = date_part(
+                    item.get("match_date")
+                )
+
+                # Если даты известны, не привязываем прогноз
+                # к другой встрече этих же команд.
+                if (
+                    target_date
+                    and history_date
+                    and target_date != history_date
+                ):
+                    continue
+
+                candidates.append((item, score))
+
+            if not candidates:
                 continue
 
-            history_row, home_goals, away_goals = selected
+            # Если есть несколько записей, берём последнюю.
+            candidates.sort(
+                key=lambda x: (
+                    str(x[0].get("match_date") or ""),
+                    int(x[0].get("id") or 0)
+                ),
+                reverse=True
+            )
 
+            history_item, score = candidates[0]
+
+            home_goals, away_goals = score
             total_goals = home_goals + away_goals
 
-            outcome = "WIN" if total_goals >= 3 else "LOSE"
+            outcome = (
+                "WIN" if total_goals >= 3 else "LOSE"
+            )
 
             final_score = f"{home_goals}:{away_goals}"
 
@@ -476,32 +661,43 @@ def sync_results_from_history():
             prediction["outcome"] = outcome
             prediction["final_score"] = final_score
             prediction["profit"] = profit
+
             updated.append(prediction)
 
         conn.commit()
 
     except Exception as e:
-        print(f"❌ Ошибка синхронизации результатов: {e}")
+        print(
+            f"❌ Ошибка синхронизации результатов: {e}"
+        )
         return 0
 
     finally:
         conn.close()
 
-    # Обновляем только сообщения прогнозов,
-    # которые получили результат в этом цикле.
+    # Обновляем сообщения Telegram.
     if updated:
         try:
-            from telegram_bot import edit_telegram, format_with_result
+            from telegram_bot import (
+                edit_telegram,
+                format_with_result
+            )
 
             for prediction in updated:
-                message_id = prediction.get("telegram_message_id")
-                base_text = prediction.get("telegram_text")
+                message_id = prediction.get(
+                    "telegram_message_id"
+                )
+
+                base_text = prediction.get(
+                    "telegram_text"
+                )
 
                 if not message_id or not base_text:
                     continue
 
                 result_line = (
-                    f"\n\n{'✅ WIN' if prediction['outcome'] == 'WIN' else '❌ LOSE'}"
+                    f"\n\n"
+                    f"{'✅ WIN' if prediction['outcome'] == 'WIN' else '❌ LOSE'}"
                     f" | Счёт: {prediction['final_score']}"
                 )
 
@@ -510,13 +706,22 @@ def sync_results_from_history():
                     result_line
                 )
 
-                edit_telegram(message_id, new_text)
+                edit_telegram(
+                    message_id,
+                    new_text
+                )
 
         except Exception as e:
-            print(f"⚠️ Ошибка обновления Telegram результатов: {e}")
+            print(
+                "⚠️ Ошибка обновления Telegram результатов: "
+                f"{e}"
+            )
 
     if updated:
-        print(f"📊 MODEL STATS: обновлено результатов: {len(updated)}")
+        print(
+            "📊 MODEL STATS: обновлено результатов: "
+            f"{len(updated)}"
+        )
 
     return len(updated)
 
@@ -532,9 +737,18 @@ def get_model_stats(model_name):
         row = conn.execute("""
             SELECT
                 COUNT(*) AS total,
-                SUM(CASE WHEN outcome = 'WIN' THEN 1 ELSE 0 END) AS wins,
-                SUM(CASE WHEN outcome = 'LOSE' THEN 1 ELSE 0 END) AS losses,
-                SUM(CASE WHEN outcome = 'PENDING' THEN 1 ELSE 0 END) AS pending,
+                SUM(
+                    CASE WHEN outcome = 'WIN'
+                    THEN 1 ELSE 0 END
+                ) AS wins,
+                SUM(
+                    CASE WHEN outcome = 'LOSE'
+                    THEN 1 ELSE 0 END
+                ) AS losses,
+                SUM(
+                    CASE WHEN outcome = 'PENDING'
+                    THEN 1 ELSE 0 END
+                ) AS pending,
                 COALESCE(SUM(profit), 0) AS profit
             FROM model_predictions
             WHERE model_name = ?
@@ -593,9 +807,18 @@ def get_all_stats():
             SELECT
                 model_name,
                 COUNT(*) AS total,
-                SUM(CASE WHEN outcome = 'WIN' THEN 1 ELSE 0 END) AS wins,
-                SUM(CASE WHEN outcome = 'LOSE' THEN 1 ELSE 0 END) AS losses,
-                SUM(CASE WHEN outcome = 'PENDING' THEN 1 ELSE 0 END) AS pending,
+                SUM(
+                    CASE WHEN outcome = 'WIN'
+                    THEN 1 ELSE 0 END
+                ) AS wins,
+                SUM(
+                    CASE WHEN outcome = 'LOSE'
+                    THEN 1 ELSE 0 END
+                ) AS losses,
+                SUM(
+                    CASE WHEN outcome = 'PENDING'
+                    THEN 1 ELSE 0 END
+                ) AS pending,
                 COALESCE(SUM(profit), 0) AS profit
             FROM model_predictions
             GROUP BY model_name
