@@ -1134,6 +1134,79 @@ def run_web():
     except Exception as e:
         print(f"❌ Ошибка сайта: {e}", flush=True)
 
+# ============================================================
+# НЕЗАВИСИМАЯ ПРОВЕРКА РЕЗУЛЬТАТОВ
+# ============================================================
+
+RESULT_CHECK_INTERVAL = 30 * 60  # 30 минут
+
+
+def result_checker_loop():
+    print(
+        "🏁 Проверка результатов запущена отдельно от сканера",
+        flush=True
+    )
+
+    last_history_date = None
+
+    while True:
+        try:
+            now = datetime.now(MOSCOW_TZ)
+
+            # Ночной перерыв: с 02:00 до 13:00 по Москве.
+            if 2 <= now.hour < 13:
+                next_start = now.replace(
+                    hour=13,
+                    minute=0,
+                    second=0,
+                    microsecond=0
+                )
+
+                sleep_seconds = max(
+                    1,
+                    int((next_start - now).total_seconds())
+                )
+
+                print(
+                    f"🌙 Проверка результатов на паузе до "
+                    f"{next_start:%d.%m.%Y %H:%M} МСК",
+                    flush=True
+                )
+
+                time.sleep(sleep_seconds)
+                continue
+
+            print(
+                f"🏁 [{now:%d.%m.%Y %H:%M:%S}] "
+                f"Проверка результатов прогнозов...",
+                flush=True
+            )
+
+            # Один раз в день загружаем результаты вчерашних матчей.
+            if last_history_date != now.date():
+                save_ruscore_results()
+                last_history_date = now.date()
+
+            # Загружаем завершённые матчи за сегодня.
+            save_ruscore_results_today()
+
+            # Закрываем прогнозы и обновляем статистику моделей.
+            sync_model_results()
+
+            print(
+                "⏳ Следующая проверка результатов через 30 минут",
+                flush=True
+            )
+
+        except Exception as e:
+            print(
+                f"❌ Ошибка отдельной проверки результатов: {e}",
+                flush=True
+            )
+            traceback.print_exc()
+
+        time.sleep(RESULT_CHECK_INTERVAL)
+
 
 # ============================================================
 # ОСНОВНОЙ ЦИКЛ
@@ -1174,8 +1247,6 @@ def bot_loop():
         flush=True
     )
 
-    last_save_date = None
-
     while True:
         try:
             now = datetime.now(MOSCOW_TZ)
@@ -1185,13 +1256,6 @@ def bot_loop():
                 f"Загрузка прематч-линии...",
                 flush=True
             )
-
-            if now.hour == 3 and last_save_date != now.date():
-                save_ruscore_results()
-                last_save_date = now.date()
-
-            save_ruscore_results_today()
-            sync_model_results()
 
             games = get_prematch_games()
 
@@ -1394,8 +1458,6 @@ def bot_loop():
                             flush=True
                         )
 
-            sync_model_results()
-
             print(
                 f"\n✅ Матчей обработано: {count_ok}\n"
                 f"🔥 Новых старых валуев: {count_value}\n"
@@ -1436,9 +1498,15 @@ if __name__ == "__main__":
             )
             traceback.print_exc()
 
-    threading.Thread(
+       threading.Thread(
         target=run_web,
         daemon=True
+    ).start()
+
+    threading.Thread(
+        target=result_checker_loop,
+        daemon=True,
+        name="OLD-RESULT-CHECKER"
     ).start()
 
     bot_loop()
