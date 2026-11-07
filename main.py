@@ -1099,7 +1099,6 @@ def save_ruscore_results_today():
         traceback.print_exc()
 
 
-
 # ============================================================
 # СВЕРКА РЕЗУЛЬТАТОВ НОВЫХ МОДЕЛЕЙ
 # ============================================================
@@ -1176,8 +1175,6 @@ def bot_loop():
     )
 
     last_save_date = None
-
-            last_save_date = None
 
     while True:
         try:
