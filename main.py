@@ -1177,7 +1177,9 @@ def bot_loop():
 
     last_save_date = None
 
-        while True:
+            last_save_date = None
+
+    while True:
         try:
             now = datetime.now(MOSCOW_TZ)
 
