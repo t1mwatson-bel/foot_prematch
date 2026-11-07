@@ -17,7 +17,11 @@ import database as db
 from config import *
 from nbbet_stats import get_match_data
 from telegram_bot import send_telegram, edit_telegram
-from ruscore import fetch_ruscore_events
+from ruscore import (
+    fetch_ruscore_events,
+    get_ruscore_status,
+    is_finished_status,
+)
 
 
 # ============================================================
@@ -1052,6 +1056,50 @@ def save_ruscore_results():
         traceback.print_exc()
 
 
+def save_ruscore_results_today():
+    """Дотягивает сегодняшние завершённые матчи из Ruscore в match_history,
+    чтобы sync_results_from_history() мог закрыть PENDING-прогнозы в день матча."""
+    today = datetime.now(MOSCOW_TZ).strftime("%Y-%m-%d")
+
+    try:
+        events = fetch_ruscore_events(today)
+        count = 0
+
+        for ev in events or []:
+            status_text = get_ruscore_status(ev)
+            if not is_finished_status(status_text):
+                continue
+
+            home = (ev.get("home") or {}).get("name")
+            away = (ev.get("away") or {}).get("name")
+            score = ev.get("score") or []
+
+            if not home or not away or not score:
+                continue
+
+            h_score = None
+            a_score = None
+            for item in score:
+                if item.get("type") == "overall":
+                    h_score = item.get("home")
+                    a_score = item.get("away")
+                    break
+
+            if h_score is None or a_score is None:
+                continue
+
+            db.save_match_result(home, away, int(h_score), int(a_score), today)
+            count += 1
+
+        if count:
+            print(f"✅ Сегодня сохранено завершённых: {count}", flush=True)
+
+    except Exception as e:
+        print(f"⚠️ Ошибка Ruscore (сегодня): {e}", flush=True)
+        traceback.print_exc()
+
+
+
 # ============================================================
 # СВЕРКА РЕЗУЛЬТАТОВ НОВЫХ МОДЕЛЕЙ
 # ============================================================
@@ -1139,10 +1187,11 @@ def bot_loop():
                 flush=True
             )
 
-            if now.hour == 3 and last_save_date != now.date():
+                        if now.hour == 3 and last_save_date != now.date():
                 save_ruscore_results()
                 last_save_date = now.date()
 
+            save_ruscore_results_today()
             sync_model_results()
 
             games = get_prematch_games()
