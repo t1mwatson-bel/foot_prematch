@@ -1181,13 +1181,13 @@ def bot_loop():
         try:
             now = datetime.now(MOSCOW_TZ)
 
-            print(
+                        print(
                 f"\n🔄 [{now:%d.%m.%Y %H:%M:%S}] "
                 f"Загрузка прематч-линии...",
                 flush=True
             )
 
-                        if now.hour == 3 and last_save_date != now.date():
+            if now.hour == 3 and last_save_date != now.date():
                 save_ruscore_results()
                 last_save_date = now.date()
 
