@@ -637,6 +637,10 @@ def get_prematch_games():
 
 def parse_prematch_game(game):
     try:
+        sport = (game.get("sport") or {}).get("label") or ""
+        if sport and sport != "football":
+            return None
+
         team1 = game["opponent1"]["fullName"]
         team2 = game["opponent2"]["fullName"]
         start_ts = int(game["startTs"])
