@@ -162,3 +162,61 @@ def get_windows(schedule):
         if start <= le: merged[-1] = (ls, max(le, end))
         else: merged.append((start, end))
     return merged
+
+def _collect_status_text(value):
+    parts = []
+    if isinstance(value, dict):
+        for nested in value.values():
+            if isinstance(nested, (dict, list)):
+                parts.extend(_collect_status_text(nested))
+            elif isinstance(nested, str):
+                parts.append(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            parts.extend(_collect_status_text(nested))
+    return parts
+
+
+def get_ruscore_status(event):
+    if not isinstance(event, dict):
+        return ""
+    parts = []
+    for key in ("status", "statusName", "statusText", "state", "period", "periodName", "matchStatus"):
+        value = event.get(key)
+        if isinstance(value, dict):
+            for subkey in ("label", "name", "text", "value", "short"):
+                nested = value.get(subkey)
+                if isinstance(nested, str):
+                    parts.append(nested)
+        elif isinstance(value, str):
+            parts.append(value)
+    return " ".join(parts)
+
+
+def is_finished_status(status):
+    if isinstance(status, dict):
+        text = " ".join(_collect_status_text(status))
+    else:
+        text = str(status or "")
+
+    text = text.lower().replace("ё", "е")
+    text = " ".join(text.replace("_", " ").replace("-", " ").split())
+
+    finished_values = {
+        "finished", "ended", "ft", "final", "complete", "completed",
+        "full time", "match finished", "match ended",
+        "завершен", "завершена", "матч завершен",
+        "окончен", "окончена", "закончен", "закончена",
+        "матч окончен", "матч закончен", "игра завершена",
+        "завершение матча",
+    }
+    if text in finished_values:
+        return True
+
+    prefixes = (
+        "finished ", "ended ", "completed ", "full time ",
+        "match finished ", "match ended ", "завершен ",
+        "завершена ", "матч завершен ", "окончен ",
+        "окончена ", "закончен ", "закончена ",
+    )
+    return text.startswith(prefixes)
