@@ -1177,11 +1177,11 @@ def bot_loop():
 
     last_save_date = None
 
-    while True:
+        while True:
         try:
             now = datetime.now(MOSCOW_TZ)
 
-                        print(
+            print(
                 f"\n🔄 [{now:%d.%m.%Y %H:%M:%S}] "
                 f"Загрузка прематч-линии...",
                 flush=True
