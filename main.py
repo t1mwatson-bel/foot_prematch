@@ -1498,16 +1498,19 @@ if __name__ == "__main__":
             )
             traceback.print_exc()
 
-           threading.Thread(
+    # Веб-сайт
+    threading.Thread(
         target=run_web,
-        daemon=True
+        daemon=True,
+        name="OLD-WEB"
     ).start()
 
+    # Независимая проверка результатов каждые 30 минут
     threading.Thread(
         target=result_checker_loop,
         daemon=True,
         name="OLD-RESULT-CHECKER"
     ).start()
 
-    bot_loop()
+    # Основной сканер прематча — каждые 3 часа
     bot_loop()
