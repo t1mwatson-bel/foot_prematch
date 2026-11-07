@@ -1498,7 +1498,7 @@ if __name__ == "__main__":
             )
             traceback.print_exc()
 
-       threading.Thread(
+           threading.Thread(
         target=run_web,
         daemon=True
     ).start()
@@ -1509,4 +1509,5 @@ if __name__ == "__main__":
         name="OLD-RESULT-CHECKER"
     ).start()
 
+    bot_loop()
     bot_loop()
