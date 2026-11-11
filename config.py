@@ -78,9 +78,9 @@ GAME_CYCLE = 720
 
 START_BALANCE = 20000
 
-DOGON_MULT = 2.5
+DOGON_MULT = 2.7
 
-WIN_COEF = 2.3
+WIN_COEF = 1.6
 
 DOGON_GAMES = 3
 
@@ -110,4 +110,4 @@ CLEANUP_MINUTE = 0
 # ФЛАГИ АЛГОРИТМОВ
 # =====================================================================
 ENABLE_LAST_10 = True
-ENABLE_FULL_V1 = False
+# ENABLE_FULL_V1 — удалён, алгоритм выпилен полностью
