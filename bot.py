@@ -41,6 +41,7 @@ validate_env()
 
 games_cache = {}
 pending_games = {}
+candidates = {}          # игра-кандидат: ждём #N-1 и #N+1 в кэше
 processed_triggers = set()
 predictions = []
 telegram_offset = 0
@@ -100,10 +101,9 @@ def refresh_pending_bets():
     """Обновляет ставки у pending-прогнозов после смены current_bet."""
     for p in predictions:
         if p.get("status") == "pending" and not p.get("sent"):
-            # Остался один алгоритм, но аргумент передаем для совместимости
             algorithm = p.get("algorithm", "Bas_v2.0")
             new_bet, new_step, _ = bank_module.get_current_bet(algorithm)
-            
+
             p["bets"] = [
                 round(new_bet, 2),
                 round(new_bet * DOGON_MULT, 2),
@@ -138,6 +138,7 @@ def should_cleanup_now(now=None):
 
 def cleanup_nightly():
     global games_cache, pending_games, processed_triggers, predictions
+    global candidates
     global last_cleanup_date
 
     now = datetime.now(MOSCOW_TZ)
@@ -152,6 +153,10 @@ def cleanup_nightly():
     pending_count = len(pending_games)
     pending_games.clear()
     print(f"   🗑️ pending_games: удалено {pending_count}", flush=True)
+
+    cand_count = len(candidates)
+    candidates.clear()
+    print(f"   🗑️ candidates: удалено {cand_count}", flush=True)
 
     triggers_count = len(processed_triggers)
     processed_triggers.clear()
@@ -242,8 +247,7 @@ def make_prediction_message(prediction):
     target = prediction["target_number"]
     bet = prediction.get("bet_amount", 0)
     step = prediction.get("bet_step", 0)
-    
-    # Оставлен только один алгоритм
+
     algo_text = "Bas_v2.0"
 
     return (
@@ -258,15 +262,13 @@ def make_result_message(prediction, result):
     target = prediction["target_number"]
     mark = "✅" if result == "win" else "❌"
 
-    # Загружаем общий банк
     state = bank_module.load_bank()
     balance = state["balance"]
 
     bets = prediction.get("bets") or [prediction.get("bet_amount", 0)]
     step = prediction.get("dogon", 0)
     bet = bets[step] if step < len(bets) else bets[-1]
-    
-    # Оставлен только один алгоритм
+
     algo_text = "Bas_v2.0"
 
     return (
@@ -285,7 +287,9 @@ def create_predictions(game):
     game_number = game["game_number"]
     game_id = game.get("game_id")
 
-    for prediction in parsers.get_algorithm_predictions(game, GAME_CYCLE):
+    for prediction in parsers.get_algorithm_predictions(
+        game, GAME_CYCLE, games_cache
+    ):
         algorithm = prediction["algorithm"]
 
         trigger_key = (algorithm, game_id or game_number)
@@ -306,7 +310,6 @@ def create_predictions(game):
             processed_triggers.add(trigger_key)
             continue
 
-        # фиксируем все 4 ставки серии заранее
         bet, step, _ = bank_module.get_current_bet(algorithm)
         prediction["bets"] = [
             round(bet, 2),
@@ -317,7 +320,6 @@ def create_predictions(game):
         prediction["bet_amount"] = prediction["bets"][0]
         prediction["bet_step"] = step
 
-        # НЕ отправляем сразу — отправим за 1 игру до цели
         prediction["message_id"] = None
         prediction["sent"] = False
 
@@ -343,6 +345,66 @@ def create_predictions(game):
 
 def create_prediction(game):
     create_predictions(game)
+
+
+# =====================================================================
+# CANDIDATES: ОТЛОЖЕННОЕ СОЗДАНИЕ ПРОГНОЗА
+# =====================================================================
+
+def add_candidate(game):
+    """Кладёт игру в очередь кандидатов на проверку триггера."""
+    number = game["game_number"]
+    if number in candidates:
+        return
+    candidates[number] = {
+        "first_seen": time.time(),
+        "game": game,
+    }
+    print(
+        f"🧩 #N{number}: добавлен в кандидаты (ждём #N-1 и #N+1)",
+        flush=True,
+    )
+
+
+def process_candidates():
+    """
+    Для каждого кандидата проверяем, что в games_cache есть
+    игра до (#N-1) и игра после (#N+1). Если обе есть — пробуем
+    создать прогноз (внутри parsers будут все проверки).
+    Если #N+1 так и не появилась за разумное время — отбрасываем.
+    """
+    if not candidates:
+        return
+
+    now = time.time()
+    to_remove = []
+
+    for number, info in list(candidates.items()):
+        game = info["game"]
+
+        prev_number = parsers.add_game_offset(number, -1, GAME_CYCLE)
+        next_number = parsers.add_game_offset(number, +1, GAME_CYCLE)
+
+        prev_game = games_cache.get(prev_number)
+        next_game = games_cache.get(next_number)
+
+        if prev_game is not None and next_game is not None:
+            # Обе игры есть — можно проверять триггер
+            create_prediction(game)
+            to_remove.append(number)
+            continue
+
+        # Защита от зависания: если кандидат висит слишком долго — снимаем
+        if now - info.get("first_seen", now) > 180:
+            print(
+                f"⌛ #N{number}: кандидат истёк "
+                f"(prev={prev_game is not None}, next={next_game is not None}) — снят",
+                flush=True,
+            )
+            to_remove.append(number)
+
+    for number in to_remove:
+        candidates.pop(number, None)
 
 
 # =====================================================================
@@ -404,8 +466,7 @@ def check_predictions():
         predicted_suit = prediction.get("predicted_suit")
         if not predicted_suit:
             continue
-            
-        # Берем алгоритм (для совместимости с bank.py)
+
         algorithm = prediction.get("algorithm", "Bas_v2.0")
 
         all_games_checked = True
@@ -433,9 +494,9 @@ def check_predictions():
 
                 bets = prediction.get("bets") or [prediction.get("bet_amount", 0)]
                 actual_bet = bets[dogon] if dogon < len(bets) else bets[-1]
-                
+
                 bank_module.apply_result(
-                    algorithm, "win", actual_bet, dogon, 
+                    algorithm, "win", actual_bet, dogon,
                     telegram_send_func=telegram_api.telegram_send,
                 )
 
@@ -450,7 +511,7 @@ def check_predictions():
                 print(f"✅ PLUS #N{target} [{algorithm}]", flush=True)
                 print(
                     f"🎯 Масть {predicted_suit} "
-                    f"найдена у игрока в #N{game_number} "
+                    f"найдена у дилера в #N{game_number} "
                     f"({found_card})",
                     flush=True,
                 )
@@ -482,9 +543,9 @@ def check_predictions():
 
         bets = prediction.get("bets") or [prediction.get("bet_amount", 0)]
         actual_bet = bets[DOGON_GAMES] if DOGON_GAMES < len(bets) else bets[-1]
-        
+
         bank_module.apply_result(
-            algorithm, "lose", actual_bet, DOGON_GAMES, 
+            algorithm, "lose", actual_bet, DOGON_GAMES,
             telegram_send_func=telegram_api.telegram_send,
         )
 
@@ -550,7 +611,9 @@ def finalize_pending_games():
             )
             continue
 
-        create_prediction(game)
+        # НЕ создаём прогноз сразу — кладём в кандидаты,
+        # ждём появления #N-1 и #N+1 в games_cache
+        add_candidate(game)
 
 
 # =====================================================================
@@ -661,8 +724,10 @@ def main():
     print("==================================================", flush=True)
     print("📡 Игры: CHANNEL_STATS", flush=True)
     print(f"⏳ Финализация: {FINALIZE_WAIT_SECONDS} сек", flush=True)
-    print("🧠 Алгоритм: последняя 10", flush=True)
+    print("🧠 Алгоритм: последняя 10 → дилер", flush=True)
     print("⭕ Фильтр #O: пропуск триггера", flush=True)
+    print("🚫 Фильтр #R/#X/#G: пропуск триггера (до/сам/после)", flush=True)
+    print("🎰 Фильтр: у дилера должны быть карты до и после триггера", flush=True)
     print(
         f"😴 Сон: с {SLEEP_HOUR:02d}:{SLEEP_MINUTE:02d} "
         f"до {WAKE_HOUR:02d}:{WAKE_MINUTE:02d}",
@@ -705,6 +770,7 @@ def main():
 
             telegram_offset = process_telegram_updates(telegram_offset)
             finalize_pending_games()
+            process_candidates()
             check_predictions()
             cleanup_games_cache()
             cleanup_predictions()
