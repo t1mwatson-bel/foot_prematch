@@ -5,7 +5,6 @@ from config import (
     MOSCOW_TZ,
     GAME_CYCLE,
     ENABLE_LAST_10,
-    ENABLE_FULL_V1,
 )
 
 
@@ -180,6 +179,7 @@ def parse_game_message(text):
     is_draw = bool(re.search(r"#X\b", text))
     is_ochko = bool(re.search(r"#O\b", text))
     is_r = bool(re.search(r"#R\b", text))
+    is_g = bool(re.search(r"#G\b", text))
     is_finished = bool(re.search(r"✅", text))
 
     return {
@@ -192,9 +192,26 @@ def parse_game_message(text):
         "is_draw": is_draw,
         "is_ochko": is_ochko,
         "is_r": is_r,
+        "is_g": is_g,
         "is_finished": is_finished,
         "raw_text": text,
     }
+
+
+# =====================================================================
+# ANOMALY CHECK
+# =====================================================================
+
+def has_anomaly(game):
+    """True, если в игре есть любой из флагов #R / #O / #X / #G."""
+    if not game:
+        return True
+    return bool(
+        game.get("is_r") or
+        game.get("is_ochko") or
+        game.get("is_draw") or
+        game.get("is_g")
+    )
 
 
 # =====================================================================
@@ -216,9 +233,12 @@ def log_game(game):
 
     if game.get("is_ochko"):
         print("⭕ #O — ОЧКО", flush=True)
-        
+
     if game.get("is_r"):
         print("⚠️ #R — АНОМАЛИЯ", flush=True)
+
+    if game.get("is_g"):
+        print("🎯 #G — ФЛАГ G", flush=True)
 
     print("────────────────────────────────────", flush=True)
 
@@ -232,13 +252,17 @@ def add_game_offset(number, offset, cycle):
 
 
 # =====================================================================
-# ALGORITHM: ПОСЛЕДНЯЯ 10 — ТЕПЕРЬ ПРОГНОЗ НА ДИЛЕРА
+# ALGORITHM: ПОСЛЕДНЯЯ 10 → ДИЛЕР
 # =====================================================================
 
-def get_last_card_prediction(game, cycle):
+def get_last_card_prediction(game, cycle, games_cache=None):
     """
-    Триггер смотрим на ИГРОКА (последняя карта = 10),
-    но прогноз даём на ДИЛЕРА и проверяем по картам дилера.
+    Триггер по игроку (последняя карта = 10), прогноз на дилера.
+
+    Доп. фильтры:
+      - ни в триггере, ни за 1 игру до, ни за 1 игру после
+        нет #R / #O / #X / #G;
+      - у дилера есть карты в игре ДО и ПОСЛЕ триггера.
     """
     player = game.get("player_cards", [])
     dealer = game.get("dealer_cards", [])
@@ -263,15 +287,15 @@ def get_last_card_prediction(game, cycle):
 
     # 4. Ровно ОДНА 10 у игрока
     tens_count = sum(
-        1 for card in player 
+        1 for card in player
         if normalize_rank(card.get("rank")) == "10"
     )
 
     if tens_count > 1:
         print(f"⚠️ #N{game['game_number']}: >1 десятки — пропуск", flush=True)
         return None
-        
-    # 5. У игрока минимум 3 карты (фильтр от триггера 192)
+
+    # 5. У игрока минимум 3 карты
     if len(player) < 3:
         print(f"⚠️ #N{game['game_number']}: у игрока <3 карт — пропуск", flush=True)
         return None
@@ -280,7 +304,72 @@ def get_last_card_prediction(game, cycle):
     if "✅" not in game.get("raw_text", ""):
         return None
 
-    # Берём масть последней карты игрока и делаем её ЗЕРКАЛЬНОЙ
+    # -----------------------------------------------------------------
+    # 7. ПРОВЕРКИ ДО / ПОСЛЕ ТРИГГЕРА
+    # -----------------------------------------------------------------
+    if games_cache is not None:
+        prev_number = add_game_offset(game["game_number"], -1, cycle)
+        next_number = add_game_offset(game["game_number"], +1, cycle)
+
+        prev_game = games_cache.get(prev_number)
+        next_game = games_cache.get(next_number)
+
+        # 7.1. Сама игра-триггер не должна содержать аномалий
+        if has_anomaly(game):
+            print(
+                f"⚠️ #N{game['game_number']}: аномалия в триггере — пропуск",
+                flush=True,
+            )
+            return None
+
+        # 7.2. Игра ДО: должна быть в кэше, без аномалий,
+        #      и у дилера должны быть карты
+        if prev_game is None:
+            print(
+                f"⚠️ #N{game['game_number']}: игра до (#N{prev_number}) не в кэше — пропуск",
+                flush=True,
+            )
+            return None
+
+        if has_anomaly(prev_game):
+            print(
+                f"⚠️ #N{game['game_number']}: аномалия в игре до (#N{prev_number}) — пропуск",
+                flush=True,
+            )
+            return None
+
+        if not prev_game.get("dealer_cards"):
+            print(
+                f"⚠️ #N{game['game_number']}: у дилера нет карт в игре до (#N{prev_number}) — пропуск",
+                flush=True,
+            )
+            return None
+
+        # 7.3. Игра ПОСЛЕ: те же проверки
+        if next_game is None:
+            print(
+                f"⚠️ #N{game['game_number']}: игра после (#N{next_number}) не в кэше — пропуск",
+                flush=True,
+            )
+            return None
+
+        if has_anomaly(next_game):
+            print(
+                f"⚠️ #N{game['game_number']}: аномалия в игре после (#N{next_number}) — пропуск",
+                flush=True,
+            )
+            return None
+
+        if not next_game.get("dealer_cards"):
+            print(
+                f"⚠️ #N{game['game_number']}: у дилера нет карт в игре после (#N{next_number}) — пропуск",
+                flush=True,
+            )
+            return None
+
+    # -----------------------------------------------------------------
+    # 8. Зеркальная масть
+    # -----------------------------------------------------------------
     raw_suit = normalize_suit(last_card.get("suit"))
     if not raw_suit:
         return None
@@ -296,7 +385,7 @@ def get_last_card_prediction(game, cycle):
         "trigger_game_id": game.get("game_id"),
         "target_number": target_number,
         "predicted_suit": predicted_suit,
-        "predicted_for": "dealer",          # <-- прогноз на дилера
+        "predicted_for": "dealer",
         "trigger_player": [card_to_text(c) for c in player],
         "trigger_dealer": [card_to_text(c) for c in dealer],
         "trigger_player_score": game["player_score"],
@@ -313,92 +402,17 @@ def get_last_card_prediction(game, cycle):
 
 
 # =====================================================================
-# ALGORITHM: FULL_V1.0 — ПРОГНОЗ НА ДИЛЕРА + ЗЕРКАЛЬНАЯ МАСТЬ
-# =====================================================================
-
-def get_full_v1_prediction(game, cycle):
-    player = game.get("player_cards", [])
-    dealer = game.get("dealer_cards", [])
-
-    if not player:
-        return None
-
-    # 1. У дилера должны быть карты
-    if not dealer:
-        return None
-
-    # 2. Нет аномалий (#R), ничьи (#X) и очка (#O)
-    if game.get("is_r") or game.get("is_draw") or game.get("is_ochko"):
-        return None
-
-    # 3. У игрока нет Туза (A) и Десятки (10)
-    for card in player:
-        rank = normalize_rank(card.get("rank"))
-        if rank in ("A", "10"):
-            return None
-
-    # 4. Берем первую карту игрока
-    first_card = player[0]
-    rank = normalize_rank(first_card.get("rank"))
-    
-    # 5. Таблица маппинга масти (Full_v1.0) + ЗЕРКАЛО
-    # Q -> ♦️, J/K -> ♥️, 2/4/6/8 -> ♠️, 3/5/7/9 -> ♣️
-    if rank == "Q":
-        base_suit = normalize_suit("♦")
-    elif rank in ("J", "K"):
-        base_suit = normalize_suit("♥")
-    elif rank in ("2", "4", "6", "8"):
-        base_suit = normalize_suit("♠")
-    elif rank in ("3", "5", "7", "9"):
-        base_suit = normalize_suit("♣")
-    else:
-        return None
-
-    predicted_suit = mirror_suit(base_suit)
-
-    # 6. Триггер и цель (+10 игр)
-    trigger_number = game["game_number"]
-    target_number = add_game_offset(trigger_number, 10, cycle)
-
-    return {
-        "algorithm": "Full_v1.0 → дилер",
-        "trigger_number": trigger_number,
-        "trigger_game_id": game.get("game_id"),
-        "target_number": target_number,
-        "predicted_suit": predicted_suit,
-        "predicted_for": "dealer",          # <-- прогноз на дилера
-        "trigger_player": [card_to_text(c) for c in player],
-        "trigger_dealer": [card_to_text(c) for c in dealer],
-        "trigger_player_score": game["player_score"],
-        "trigger_dealer_score": game["dealer_score"],
-        "status": "pending",
-        "created_at": datetime.now(MOSCOW_TZ).isoformat(),
-        "result_game": None,
-        "found_card": None,
-        "dogon": None,
-        "message_id": None,
-        "sent": False,
-        "target_offset": 10,
-    }
-
-
-# =====================================================================
 # ОБЩАЯ ФУНКЦИЯ ЗАПУСКА АЛГОРИТМОВ
 # =====================================================================
 
-def get_algorithm_predictions(game, cycle):
+def get_algorithm_predictions(game, cycle, games_cache=None):
     predictions = []
-    
+
     if ENABLE_LAST_10:
-        p1 = get_last_card_prediction(game, cycle)
+        p1 = get_last_card_prediction(game, cycle, games_cache)
         if p1:
             predictions.append(p1)
-        
-    if ENABLE_FULL_V1:
-        p2 = get_full_v1_prediction(game, cycle)
-        if p2:
-            predictions.append(p2)
-        
+
     return predictions
 
 
