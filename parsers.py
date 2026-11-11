@@ -20,6 +20,14 @@ SUITS = {
     "\u2665": "\u2665\ufe0f",  # ♥
 }
 
+# Зеркальные масти: ♥️ <-> ♣️, ♦️ <-> ♠️
+MIRROR_SUITS = {
+    "\u2665\ufe0f": "\u2663\ufe0f",  # ♥ -> ♣
+    "\u2663\ufe0f": "\u2665\ufe0f",  # ♣ -> ♥
+    "\u2666\ufe0f": "\u2660\ufe0f",  # ♦ -> ♠
+    "\u2660\ufe0f": "\u2666\ufe0f",  # ♠ -> ♦
+}
+
 
 def normalize_suit(suit):
     if suit is None:
@@ -29,6 +37,16 @@ def normalize_suit(suit):
     suit = suit.replace("\ufe0f", "")
 
     return SUITS.get(suit)
+
+
+def mirror_suit(suit):
+    """Меняет масть на зеркальную: ♥️->♣️, ♦️->♠️ и наоборот."""
+    if not suit:
+        return suit
+    normalized = normalize_suit(suit)
+    if not normalized:
+        return suit
+    return MIRROR_SUITS.get(normalized, normalized)
 
 
 def normalize_rank(rank):
@@ -214,10 +232,14 @@ def add_game_offset(number, offset, cycle):
 
 
 # =====================================================================
-# ALGORITHM: ПОСЛЕДНЯЯ 10 (С ФИЛЬТРАМИ) - СТАРЫЙ АЛГОРИТМ
+# ALGORITHM: ПОСЛЕДНЯЯ 10 — ТЕПЕРЬ ПРОГНОЗ НА ДИЛЕРА
 # =====================================================================
 
 def get_last_card_prediction(game, cycle):
+    """
+    Триггер смотрим на ИГРОКА (последняя карта = 10),
+    но прогноз даём на ДИЛЕРА и проверяем по картам дилера.
+    """
     player = game.get("player_cards", [])
     dealer = game.get("dealer_cards", [])
 
@@ -232,7 +254,7 @@ def get_last_card_prediction(game, cycle):
     if game.get("is_ochko"):
         return None
 
-    # 3. Последняя карта должна быть 10
+    # 3. Последняя карта игрока должна быть 10
     last_card = player[-1]
     last_rank = normalize_rank(last_card.get("rank"))
 
@@ -258,20 +280,23 @@ def get_last_card_prediction(game, cycle):
     if "✅" not in game.get("raw_text", ""):
         return None
 
-    suit = normalize_suit(last_card.get("suit"))
-
-    if not suit:
+    # Берём масть последней карты игрока и делаем её ЗЕРКАЛЬНОЙ
+    raw_suit = normalize_suit(last_card.get("suit"))
+    if not raw_suit:
         return None
+
+    predicted_suit = mirror_suit(raw_suit)
 
     target_offset = len(player)
     target_number = add_game_offset(game["game_number"], target_offset, cycle)
 
     return {
-        "algorithm": "последняя 10",
+        "algorithm": "последняя 10 → дилер",
         "trigger_number": game["game_number"],
         "trigger_game_id": game.get("game_id"),
         "target_number": target_number,
-        "predicted_suit": suit,
+        "predicted_suit": predicted_suit,
+        "predicted_for": "dealer",          # <-- прогноз на дилера
         "trigger_player": [card_to_text(c) for c in player],
         "trigger_dealer": [card_to_text(c) for c in dealer],
         "trigger_player_score": game["player_score"],
@@ -288,7 +313,7 @@ def get_last_card_prediction(game, cycle):
 
 
 # =====================================================================
-# ALGORITHM: FULL_V1.0 (МАСТЬ ПО ПЕРВОЙ КАРТЕ, +10 ИГР) - НОВЫЙ
+# ALGORITHM: FULL_V1.0 — ПРОГНОЗ НА ДИЛЕРА + ЗЕРКАЛЬНАЯ МАСТЬ
 # =====================================================================
 
 def get_full_v1_prediction(game, cycle):
@@ -316,29 +341,32 @@ def get_full_v1_prediction(game, cycle):
     first_card = player[0]
     rank = normalize_rank(first_card.get("rank"))
     
-    # 5. Таблица маппинга масти (Full_v1.0)
+    # 5. Таблица маппинга масти (Full_v1.0) + ЗЕРКАЛО
     # Q -> ♦️, J/K -> ♥️, 2/4/6/8 -> ♠️, 3/5/7/9 -> ♣️
     if rank == "Q":
-        predicted_suit = normalize_suit("♦")
+        base_suit = normalize_suit("♦")
     elif rank in ("J", "K"):
-        predicted_suit = normalize_suit("♥")
+        base_suit = normalize_suit("♥")
     elif rank in ("2", "4", "6", "8"):
-        predicted_suit = normalize_suit("♠")
+        base_suit = normalize_suit("♠")
     elif rank in ("3", "5", "7", "9"):
-        predicted_suit = normalize_suit("♣")
+        base_suit = normalize_suit("♣")
     else:
         return None
+
+    predicted_suit = mirror_suit(base_suit)
 
     # 6. Триггер и цель (+10 игр)
     trigger_number = game["game_number"]
     target_number = add_game_offset(trigger_number, 10, cycle)
 
     return {
-        "algorithm": "Full_v1.0",
+        "algorithm": "Full_v1.0 → дилер",
         "trigger_number": trigger_number,
         "trigger_game_id": game.get("game_id"),
         "target_number": target_number,
         "predicted_suit": predicted_suit,
+        "predicted_for": "dealer",          # <-- прогноз на дилера
         "trigger_player": [card_to_text(c) for c in player],
         "trigger_dealer": [card_to_text(c) for c in dealer],
         "trigger_player_score": game["player_score"],
@@ -361,13 +389,11 @@ def get_full_v1_prediction(game, cycle):
 def get_algorithm_predictions(game, cycle):
     predictions = []
     
-    # 1. Старый алгоритм (Последняя 10) — если включен в конфиге
     if ENABLE_LAST_10:
         p1 = get_last_card_prediction(game, cycle)
         if p1:
             predictions.append(p1)
         
-    # 2. Новый алгоритм (Full_v1.0) — если включен в конфиге
     if ENABLE_FULL_V1:
         p2 = get_full_v1_prediction(game, cycle)
         if p2:
@@ -377,16 +403,21 @@ def get_algorithm_predictions(game, cycle):
 
 
 # =====================================================================
-# CHECK PLAYER SUIT
+# CHECK DEALER SUIT (проверка результата по ДИЛЕРУ)
 # =====================================================================
 
 def check_prediction_suit(game, predicted_suit):
-    player_cards = game.get("player_cards", [])
+    """
+    Проверяем масть в картах ДИЛЕРА, а не игрока.
+    predicted_suit уже должен быть в зеркальном формате.
+    """
+    dealer_cards = game.get("dealer_cards", [])
+    target = normalize_suit(predicted_suit)
 
-    for card in player_cards:
+    for card in dealer_cards:
         suit = normalize_suit(card.get("suit"))
 
-        if suit == predicted_suit:
+        if suit == target:
             return card_to_text(card)
 
     return None
