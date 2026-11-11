@@ -14,6 +14,13 @@ def start_web_server():
         pass
 
     class StatsHandler(http.server.SimpleHTTPRequestHandler):
+        def end_headers(self):
+            # Анти-кэш: браузер всегда берёт свежий stats.html
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+            super().end_headers()
+
         def do_GET(self):
             if self.path in ("/", "/health"):
                 if os.path.exists(STATS_HTML_FILE):
